@@ -464,7 +464,7 @@ async function cmdDnsOn() {
   }
 }
 
-async function cmdDnsOff() {
+async function cmdDnsOff({ keepAutostart = false } = {}) {
   let iface = getWifiInterface();
   let dnsToRestore = null;  // null = DHCP
   try {
@@ -501,17 +501,16 @@ async function cmdDnsOff() {
     await new Promise(r => setTimeout(r, 600));
 
     // Step 3: 此时 DNS 已经可用，安全地移除 pf anchor
-    // 使用 stdio:'inherit' 确保 sudo 能提示密码，不能静默失败
-    execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F all`, { stdio: 'inherit' });
+    // 使用 -F nat 只清 anchor 的 rdr/nat 规则，不影响全局 pf 规则集（-F all 会清整个 pf）
+    execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F nat`, { stdio: 'inherit' });
 
-    // Step 4: 如果原来是 DHCP，最终再设回 Empty 让系统走 DHCP
-    if (!dnsToRestore || !dnsToRestore.length) {
-      execSync(`sudo networksetup -setdnsservers "${iface}" "Empty"`, { stdio: 'inherit' });
-    }
+    // 注意：不设回 Empty。过渡 DNS（transitionDns）本身就是 DHCP 下发的路由器 DNS，
+    // 设回 Empty 会触发 mDNSResponder 重新向 DHCP 请求，产生数秒解析真空。
 
     try { require('fs').unlinkSync(DNS_BACKUP_FILE); } catch {}
     try { require('fs').unlinkSync(PF_CONF); } catch {}
-    try { require('fs').unlinkSync(DNS_AUTOSTART_FILE); } catch {}
+    // 只有用户手动 dns-off 才删除自启标志；stop/restart 保留它以便下次 start 恢复
+    if (!keepAutostart) { try { require('fs').unlinkSync(DNS_AUTOSTART_FILE); } catch {} }
     const restoredDesc = (dnsToRestore && dnsToRestore.length) ? dnsToRestore.join(', ') : `${transitionDns.join(', ')} (将随 DHCP 更新)`;
     console.log(c.green(`✓ DNS 已恢复为 ${restoredDesc}`));
   } catch (e) {
@@ -990,7 +989,7 @@ async function cmdStop() {
   await cmdProxyOff();
   if (dnsManaged) {
     console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
-    await cmdDnsOff();
+    await cmdDnsOff({ keepAutostart: true });
   }
   console.log('停止 Mihomo...');
   run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
@@ -1012,7 +1011,7 @@ async function cmdRestart() {
   await cmdProxyOff();
   if (dnsManaged) {
     console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
-    await cmdDnsOff();
+    await cmdDnsOff({ keepAutostart: true });
   }
   console.log('重启 Mihomo...');
   run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
