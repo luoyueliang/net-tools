@@ -1,0 +1,120 @@
+# Clash Meta (Mihomo) / ClashX Pro subscription config template
+# Copy to ~/.config/mihomo/config.yaml and fill in your proxy node details
+
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: warning
+ipv6: false
+external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  ipv6: false
+  listen: 0.0.0.0:1053
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - localhost.ptlogin2.qq.com
+  default-nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  fallback:
+    - 8.8.8.8
+    - 1.1.1.1
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+
+proxies:
+  # Example 1: VLESS + Reality (recommended)
+  - name: proxy-vless-reality
+    type: vless
+    server: __YOUR_SERVER_HOST__
+    port: 8443
+    uuid: __YOUR_UUID__
+    network: tcp
+    tls: true
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: __REALITY_PUBLIC_KEY__
+      short-id: __REALITY_SHORT_ID__
+    servername: www.microsoft.com
+    client-fingerprint: chrome
+
+  # Example 2: VMess TCP
+  - name: proxy-vmess
+    type: vmess
+    server: __YOUR_SERVER_HOST__
+    port: 1082
+    uuid: __YOUR_UUID__
+    alterId: 0
+    cipher: auto
+
+  # Example 3: VMess + WS + TLS
+  - name: proxy-vmess-ws
+    type: vmess
+    server: __YOUR_SERVER_HOST__
+    port: 443
+    uuid: __YOUR_UUID__
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    skip-cert-verify: false
+    servername: __YOUR_SERVER_HOST__
+    ws-opts:
+      path: /ray
+      headers:
+        Host: __YOUR_SERVER_HOST__
+
+proxy-groups:
+  - name: auto-select
+    type: url-test
+    proxies:
+      - proxy-vless-reality
+      - proxy-vmess
+      - proxy-vmess-ws
+    url: https://www.gstatic.com/generate_204
+    interval: 120
+    tolerance: 50
+
+  - name: manual-select
+    type: select
+    proxies:
+      - auto-select
+      - proxy-vless-reality
+      - proxy-vmess
+      - proxy-vmess-ws
+      - DIRECT
+
+  - name: default-out
+    type: select
+    proxies:
+      - auto-select
+      - manual-select
+      - DIRECT
+
+rules:
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT
+  - DOMAIN-SUFFIX,baidu.com,DIRECT
+  - DOMAIN-SUFFIX,bilibili.com,DIRECT
+  - DOMAIN-SUFFIX,qq.com,DIRECT
+  - DOMAIN-SUFFIX,taobao.com,DIRECT
+  - DOMAIN-SUFFIX,jd.com,DIRECT
+  - DOMAIN-SUFFIX,weibo.com,DIRECT
+  - DOMAIN-SUFFIX,alipay.com,DIRECT
+  - DOMAIN-SUFFIX,aliyun.com,DIRECT
+  - DOMAIN-SUFFIX,tencent.com,DIRECT
+  - DOMAIN-SUFFIX,bytedance.com,DIRECT
+  - DOMAIN-SUFFIX,douyin.com,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,default-out

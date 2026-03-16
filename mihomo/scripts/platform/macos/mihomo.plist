@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.metacubex.mihomo</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/mihomo</string>
+        <string>-d</string>
+        <string>__HOME__/.config/mihomo</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.config/mihomo/logs/mihomo.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.config/mihomo/logs/mihomo.log</string>
+</dict>
+</plist>

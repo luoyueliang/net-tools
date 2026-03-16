@@ -1,0 +1,1180 @@
+#!/usr/bin/env node
+// mihomo-ctl - Mihomo 管理工具
+// 用法: mihomo-ctl [status|start|stop|restart|proxies|test|log|help]
+
+const { execSync, exec } = require('child_process');
+const http = require('http');
+
+const API    = 'http://127.0.0.1:9090';
+const PLIST  = `${process.env.HOME}/Library/LaunchAgents/io.github.metacubex.mihomo.plist`;
+const PLIST_DISABLED = `${process.env.HOME}/Library/LaunchAgents/io.github.metacubex.mihomo.plist.disabled`;
+const LOG      = `${process.env.HOME}/.config/mihomo/logs/mihomo.log`;
+const CONFIG   = `${process.env.HOME}/.config/mihomo/config.yaml`;
+const BIN      = '/usr/local/bin/mihomo';
+const DATA_DIR = `${process.env.HOME}/.config/mihomo/data`;
+const GEO_CRON_TAG = '# mihomo-geo-update';
+
+// ANSI 颜色
+const c = {
+  green: s => `\x1b[32m${s}\x1b[0m`,
+  red:   s => `\x1b[31m${s}\x1b[0m`,
+  yellow:s => `\x1b[33m${s}\x1b[0m`,
+  cyan:  s => `\x1b[36m${s}\x1b[0m`,
+  bold:  s => `\x1b[1m${s}\x1b[0m`,
+  dim:   s => `\x1b[2m${s}\x1b[0m`,
+};
+
+function apiGet(path) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`${API}${path}`, { timeout: 3000 }, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve(data); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+function apiPut(path, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const opts = {
+      hostname: '127.0.0.1', port: 9090, path, method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 3000,
+    };
+    const req = http.request(opts, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => resolve({ status: res.statusCode, body: d }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(data);
+    req.end();
+  });
+}
+
+function run(cmd) {
+  try { return execSync(cmd, { encoding: 'utf8' }).trim(); }
+  catch { return ''; }
+}
+
+async function isRunning() {
+  try { await apiGet('/version'); return true; }
+  catch { return false; }
+}
+
+// ─── 平台检测 & 服务管理 ──────────────────────────────────────
+function detectPlatform() {
+  const fs = require('fs');
+  if (process.platform === 'darwin') return 'macos';
+  if (fs.existsSync('/etc/alpine-release'))  return 'alpine';
+  if (fs.existsSync('/etc/openwrt_release')) return 'openwrt';
+  if (process.platform === 'linux')   return 'linux';
+  if (process.platform === 'freebsd') return 'freebsd';
+  return 'unknown';
+}
+
+// 停止 Mihomo 服务（跨平台）
+function serviceStop() {
+  const pl = detectPlatform();
+  if (pl === 'macos') {
+    run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+    run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+  } else if (pl === 'linux') {
+    run('sudo systemctl stop mihomo 2>/dev/null || true');
+  } else if (pl === 'alpine') {
+    run('rc-service mihomo stop 2>/dev/null || true');
+  } else if (pl === 'openwrt') {
+    run('/etc/init.d/mihomo stop 2>/dev/null || true');
+  } else if (pl === 'freebsd') {
+    run('sudo service mihomo stop 2>/dev/null || true');
+  } else {
+    run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+  }
+}
+
+// 启动 Mihomo 服务（跨平台）
+function serviceStart() {
+  const fs = require('fs');
+  const pl = detectPlatform();
+  const HOME = process.env.HOME;
+  if (pl === 'macos') {
+    if (fs.existsSync(PLIST)) run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+    else exec(`${BIN} -d "${HOME}/.config/mihomo" >> "${LOG}" 2>&1 &`);
+  } else if (pl === 'linux') {
+    run('sudo systemctl start mihomo 2>/dev/null || true');
+  } else if (pl === 'alpine') {
+    run('rc-service mihomo start 2>/dev/null || true');
+  } else if (pl === 'openwrt') {
+    run('/etc/init.d/mihomo start 2>/dev/null || true');
+  } else if (pl === 'freebsd') {
+    run('sudo service mihomo start 2>/dev/null || true');
+  } else {
+    exec(`${BIN} -d "${HOME}/.config/mihomo" >> "${LOG}" 2>&1 &`);
+  }
+}
+
+// ─── 命令：status ──────────────────────────────────────────────
+async function cmdStatus() {
+  console.log(c.bold('\n── Mihomo 状态 ──────────────────────────────'));
+
+  // 开机自启状态
+  const fs = require('fs');
+  const autostartOn  = fs.existsSync(PLIST) && !fs.existsSync(PLIST_DISABLED);
+  const autostartOff = fs.existsSync(PLIST_DISABLED);
+  const autostartStr = autostartOn ? c.green('开机自启: 已启用') : c.dim('开机自启: 已禁用');
+
+  const running = await isRunning();
+  if (!running) {
+    console.log(c.red('● 未运行') + `   ${autostartStr}`);
+    const launchd = run('launchctl list | grep mihomo');
+    if (launchd) console.log(c.yellow('  LaunchAgent 已加载但进程未响应 API'));
+    return;
+  }
+
+  // 版本
+  const ver = await apiGet('/version');
+  console.log(c.green('● 运行中') + `  版本: ${ver.version || '?'}   ${autostartStr}`);
+
+  // PID & 端口
+  const pid = run("pgrep -f 'mihomo -d'");
+  const port7890 = run('lsof -i :7890 -sTCP:LISTEN -n | grep mihomo | head -1');
+  console.log(`  PID: ${pid || '?'}   端口: ${port7890 ? c.green('7890 ✓') : c.red('7890 ✗')}  管理: 9090`);
+
+  // 当前模式 & 日志 & DNS
+  const cfg = await apiGet('/configs').catch(() => ({}));
+  const logLevel = cfg['log-level'] || '?';
+  const logStr   = logLevel === 'silent' ? c.dim('日志: 关闭') : c.yellow(`日志: ${logLevel}`);
+  const dnsStr   = isDnsManagedByMihomo() ? c.green('DNS: 已接管') : c.dim('DNS: 系统默认');
+  const proxyStr   = isSystemProxySetToMihomo() ? c.green('代理: 已接管') : c.dim('代理: 系统默认');
+  console.log(`  模式: ${c.cyan(cfg.mode || '?')}   ${logStr}   ${dnsStr}   ${proxyStr}`);
+
+  // 当前出口
+  const groups = await apiGet('/proxies').catch(() => ({}));
+  const main = groups?.proxies?.['\u{1F30D} 默认出口'];
+  if (main?.now) console.log(`  默认出口: ${c.cyan(main.now)}`);
+  const auto = groups?.proxies?.['\u{1F680} 自动选择'];
+  if (auto?.now) console.log(`  自动选择: ${c.cyan(auto.now)}`);
+
+  // 连接数 & 累计流量
+  const conns = await apiGet('/connections').catch(() => ({}));
+  const connCount = (conns.connections || []).length;
+  const { downloadTotal = 0, uploadTotal = 0 } = conns;
+  const fmtB = b => b > 1e9 ? `${(b/1e9).toFixed(2)}GB` : b > 1e6 ? `${(b/1e6).toFixed(1)}MB` : b > 1e3 ? `${(b/1e3).toFixed(0)}KB` : `${b}B`;
+  console.log(`  连接数: ${c.cyan(connCount)}   流量: \u2193${c.cyan(fmtB(downloadTotal))} \u2191${c.yellow(fmtB(uploadTotal))}`);
+
+  // GeoIP 文件新鲜度
+  const fs = require('fs');
+  const geoipPath = `${DATA_DIR}/geoip.dat`;
+  if (fs.existsSync(geoipPath)) {
+    const days = Math.floor((Date.now() - fs.statSync(geoipPath).mtimeMs) / 86400000);
+    const ageStr = days === 0 ? '今天' : `${days} 天前`;
+    console.log(`  GeoIP: ${days > 30 ? c.yellow('更新于 ' + ageStr + '  建议: mihomo-ctl geo update') : c.dim('更新于 ' + ageStr)}`);
+  } else {
+    console.log(c.dim('  GeoIP: 未下载   mihomo-ctl geo update'));
+  }
+}
+async function cmdProxies() {
+  if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
+  const data = await apiGet('/proxies');
+  const proxies = data.proxies || {};
+
+  console.log(c.bold('\n── 代理节点 ──────────────────────────────────'));
+  for (const [name, info] of Object.entries(proxies)) {
+    if (['DIRECT','REJECT','GLOBAL'].includes(name)) continue;
+    if (info.type === 'Selector' || info.type === 'URLTest' || info.type === 'Fallback') {
+      const alive = (info.all || []).filter(n => proxies[n]?.history?.slice(-1)[0]?.delay > 0);
+      const now   = info.now ? c.green(info.now) : c.dim('未选择');
+      console.log(`\n  ${c.bold(c.cyan(name))} [${info.type}]  当前: ${now}`);
+      for (const sub of (info.all || [])) {
+        const p = proxies[sub];
+        if (!p) continue;
+        const delay = p.history?.slice(-1)[0]?.delay;
+        const ping  = delay ? c.green(`${delay}ms`) : c.dim('未测速');
+        const mark  = info.now === sub ? ' ◀' : '';
+        console.log(`    ${c.dim('·')} ${sub.padEnd(30)} ${ping}${mark}`);
+      }
+    } else if (!['Selector','URLTest','Fallback','LoadBalance'].includes(info.type)) {
+      const delay = info.history?.slice(-1)[0]?.delay;
+      const ping  = delay ? c.green(`${delay}ms`) : c.dim('—');
+      console.log(`  ${name.padEnd(32)} ${String(info.type).padEnd(12)} ${ping}`);
+    }
+  }
+}
+
+// ─── 命令：test ────────────────────────────────────────────────
+async function cmdTest() {
+  if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
+  console.log(c.bold('\n── 测速所有节点 ──────────────────────────────'));
+  console.log(c.dim('  正在触发测速（约 10s）...\n'));
+
+  // 逐个测速
+  const data  = await apiGet('/proxies');
+  const names = Object.entries(data.proxies || {})
+    .filter(([, v]) => !['Selector','URLTest','Fallback','LoadBalance','Direct','Reject'].includes(v.type)
+                    && !['DIRECT','REJECT','GLOBAL'].includes(v.name))
+    .map(([n]) => n);
+
+  const tested = await Promise.all(names.map(name =>
+    new Promise(resolve => {
+      const opts = {
+        hostname: '127.0.0.1', port: 9090,
+        path: `/proxies/${encodeURIComponent(name)}/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=5000`,
+        method: 'GET', timeout: 8000,
+      };
+      const req = http.request(opts, res => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => {
+          try { resolve({ name, ...JSON.parse(d) }); }
+          catch { resolve({ name, delay: 0 }); }
+        });
+      });
+      req.on('error', () => resolve({ name, delay: 0 }));
+      req.on('timeout', () => { req.destroy(); resolve({ name, delay: 0 }); });
+      req.end();
+    })
+  ));
+
+  tested.sort((a, b) => (a.delay || 99999) - (b.delay || 99999));
+  for (const { name, delay } of tested) {
+    const ping = delay ? c.green(`${delay}ms`.padStart(7)) : c.red('  超时');
+    console.log(`  ${ping}  ${name}`);
+  }
+}
+
+// ─── 交互式选择 ────────────────────────────────────────────────
+function interactiveSelect(items, prompt) {
+  return new Promise(resolve => {
+    const readline = require('readline');
+    let idx = 0;
+
+    const rl = readline.createInterface({ input: process.stdin });
+    process.stdin.setRawMode(true);
+    readline.emitKeypressEvents(process.stdin);
+
+    function render() {
+      // 清除已渲染的行
+      process.stdout.write(`\x1b[${items.length + 1}A`);
+      console.log(c.dim(prompt));
+      items.forEach((item, i) => {
+        const selected = i === idx;
+        const prefix = selected ? c.cyan(' ❯ ') : '   ';
+        const label  = selected ? c.bold(c.cyan(item.label)) : item.label;
+        const sub    = item.sub ? c.dim(`  ${item.sub}`) : '';
+        console.log(`${prefix}${label}${sub}`);
+      });
+    }
+
+    // 初次渲染（先打印空行占位）
+    console.log(c.dim(prompt));
+    items.forEach(() => console.log(''));
+    render();
+
+    process.stdin.on('keypress', (str, key) => {
+      if (!key) return;
+      if (key.name === 'up')   { idx = (idx - 1 + items.length) % items.length; render(); }
+      if (key.name === 'down') { idx = (idx + 1) % items.length; render(); }
+      if (key.name === 'return') {
+        process.stdin.setRawMode(false);
+        rl.close();
+        process.stdin.removeAllListeners('keypress');
+        console.log('');
+        resolve(items[idx]);
+      }
+      if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+        process.stdin.setRawMode(false);
+        rl.close();
+        process.stdin.removeAllListeners('keypress');
+        console.log('');
+        resolve(null);
+      }
+    });
+  });
+}
+
+// ─── 命令：select ──────────────────────────────────────────────
+async function cmdSelect(group, node) {
+  if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
+
+  // 直接命令行模式（有参数）
+  if (group && node) {
+    const res = await apiPut(`/proxies/${encodeURIComponent(group)}`, { name: node });
+    if (res.status === 204) console.log(c.green(`✓ 已切换 [${group}] → ${node}`));
+    else console.log(c.red(`✗ 失败 ${res.status}: ${res.body}`));
+    return;
+  }
+
+  // 交互模式
+  const data = await apiGet('/proxies');
+  const proxies = data.proxies || {};
+
+  // 第一步：选择组（Selector 类型）
+  const groups = Object.entries(proxies)
+    .filter(([, v]) => v.type === 'Selector')
+    .map(([name, v]) => ({ label: name, sub: `当前: ${v.now || '—'}`, value: name, all: v.all || [] }));
+
+  if (!groups.length) { console.log(c.red('没有可切换的 Selector 组')); return; }
+
+  console.log(c.bold('\n── 交互切换节点 ─────────────────── ↑↓选择 Enter确认 Esc退出\n'));
+  const chosenGroup = await interactiveSelect(groups, '第一步：选择代理组');
+  if (!chosenGroup) { console.log(c.dim('已取消')); return; }
+
+  // 第二步：选择节点
+  const nodes = chosenGroup.all.map(n => {
+    const p = proxies[n];
+    const delay = p?.history?.slice(-1)[0]?.delay;
+    const ping  = delay ? `${delay}ms` : '—';
+    const type  = p?.type || '';
+    return { label: n, sub: `${type}  ${ping}`, value: n };
+  });
+
+  const chosenNode = await interactiveSelect(nodes, `第二步：选择节点  (组: ${chosenGroup.label})`);
+  if (!chosenNode) { console.log(c.dim('已取消')); return; }
+
+  const res = await apiPut(`/proxies/${encodeURIComponent(chosenGroup.value)}`, { name: chosenNode.value });
+  if (res.status === 204) console.log(c.green(`✓ 已切换 [${chosenGroup.label}] → ${chosenNode.label}`));
+  else console.log(c.red(`✗ 失败 ${res.status}: ${res.body}`));
+}
+
+function isSystemProxySetToMihomo() {
+  const out = run('scutil --proxy 2>/dev/null');
+  return out.includes('HTTPProxy : 127.0.0.1') && out.includes('HTTPEnable : 1');
+}
+
+function getAllNetworkServices() {
+  // 返回所有已启用的网络服务（过滤掉屏条目）
+  return run('networksetup -listallnetworkservices 2>/dev/null')
+    .split('\n')
+    .filter(s => s && !s.startsWith('An ') && !s.includes('*'));
+}
+
+async function cmdProxyOn() {
+  if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
+  const services = getAllNetworkServices();
+  require('fs').writeFileSync(PROXY_BACKUP_FILE, JSON.stringify({ services }));
+  let ok = 0, fail = 0;
+  for (const svc of services) {
+    try {
+      execSync(`sudo networksetup -setwebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`sudo networksetup -setsecurewebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`sudo networksetup -setsocksfirewallproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: 'pipe' });
+      ok++;
+    } catch { fail++; }
+  }
+  console.log(c.green(`✓ 系统代理已接管 → 127.0.0.1:7890 (成功 ${ok} 个服务)` + (fail ? c.dim(` 跳过 ${fail} 个`) : '')));
+  console.log(c.dim('  关闭: mihomo-ctl proxy-off'));
+}
+
+async function cmdProxyOff() {
+  let services;
+  try {
+    const bak = JSON.parse(require('fs').readFileSync(PROXY_BACKUP_FILE, 'utf8'));
+    services = Array.isArray(bak.services) ? bak.services : null;
+  } catch {}
+  if (!services) services = getAllNetworkServices();
+  let ok = 0;
+  for (const svc of services) {
+    try {
+      execSync(`sudo networksetup -setwebproxystate "${svc}" off 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`sudo networksetup -setsecurewebproxystate "${svc}" off 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`sudo networksetup -setsocksfirewallproxystate "${svc}" off 2>/dev/null`, { stdio: 'pipe' });
+      ok++;
+    } catch {}
+  }
+  try { require('fs').unlinkSync(PROXY_BACKUP_FILE); } catch {}
+  console.log(c.green(`✓ 系统代理已关闭 (共 ${ok} 个服务)`));
+}
+
+// ─── 命令：dns-on / dns-off ──────────────────────────────────
+const PF_CONF = '/tmp/mihomo-dns.pf.conf';
+const PF_TOKEN_FILE = '/tmp/mihomo-dns.pf.token';
+const DNS_BACKUP_FILE = '/tmp/mihomo-dns.backup';
+const PROXY_BACKUP_FILE = '/tmp/mihomo-proxy.backup';
+
+function getWifiInterface() {
+  // 找第一个活跃的 Wi-Fi 或以太网
+  const services = run('networksetup -listallnetworkservices').split('\n').filter(s => !s.startsWith('An '));
+  for (const svc of services) {
+    const dev = run(`networksetup -getinfo "${svc}" | grep "^IP address:"`);
+    if (dev) return svc;
+  }
+  return 'Wi-Fi';
+}
+
+async function cmdDnsOn() {
+  if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
+
+  // 检查 1053 是否在监听
+  const listening = run('lsof -i :1053 -sTCP:LISTEN -n -P 2>/dev/null || lsof -i UDP:1053 -n -P 2>/dev/null | grep mihomo');
+  if (!listening) {
+    console.log(c.red('✗ Mihomo DNS 未在 127.0.0.1:1053 监听，请检查配置后重启'));
+    console.log(c.dim('  mihomo-ctl restart'));
+    return;
+  }
+
+  const iface = getWifiInterface();
+  console.log(c.bold(`\n── 开启 DNS 接管 (接口: ${iface}) ─────────────────`));
+
+  // 备份当前 DNS
+  const currentDns = run(`networksetup -getdnsservers "${iface}"`);
+  require('fs').writeFileSync(DNS_BACKUP_FILE, JSON.stringify({ iface, dns: currentDns }));
+
+  // 写 pf 规则（把 lo0 的 53 端口重定向到 1053）
+  const pfConf = [
+    'rdr pass on lo0 proto udp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
+    'rdr pass on lo0 proto tcp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
+  ].join('\n');
+  require('fs').writeFileSync(PF_CONF, pfConf);
+
+  try {
+    // 加载 pf 规则并启用
+    execSync(`sudo pfctl -f "${PF_CONF}" 2>/dev/null; sudo pfctl -e 2>/dev/null || true`, { stdio: 'inherit' });
+    // 设置系统 DNS
+    execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: 'inherit' });
+    execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
+    console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)`) );
+    console.log(c.dim('  国内域名 → 阿里/腾讯 DoH (直连)'));
+    console.log(c.dim('  国外域名 → 1.1.1.1 / Google DoH (走代理)'));
+    console.log(c.dim(`\n  关闭: mihomo-ctl dns-off`));
+  } catch (e) {
+    console.log(c.red(`✗ 失败: ${e.message}`));
+    console.log(c.dim('  可能需要 sudo 权限，请手动运行:'));
+    console.log(c.cyan(`  sudo pfctl -f "${PF_CONF}" && sudo pfctl -e`));
+    console.log(c.cyan(`  sudo networksetup -setdnsservers "${iface}" 127.0.0.1`));
+  }
+}
+
+async function cmdDnsOff() {
+  const iface = (() => {
+    try {
+      const bak = JSON.parse(require('fs').readFileSync(DNS_BACKUP_FILE, 'utf8'));
+      return bak.iface;
+    } catch { return getWifiInterface(); }
+  })();
+
+  console.log(c.bold(`\n── 关闭 DNS 接管 (接口: ${iface}) ────────────────`));
+  try {
+    execSync(`sudo pfctl -d 2>/dev/null || true`, { stdio: 'pipe' });
+    execSync(`sudo networksetup -setdnsservers "${iface}" "Empty"`, { stdio: 'inherit' });
+    execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
+    try { require('fs').unlinkSync(DNS_BACKUP_FILE); } catch {}
+    try { require('fs').unlinkSync(PF_CONF); } catch {}
+    console.log(c.green('✓ DNS 已恢复为 DHCP 自动获取'));
+  } catch (e) {
+    console.log(c.red(`✗ 失败: ${e.message}`));
+  }
+}
+
+async function cmdDnsStatus() {
+  const sysDns = run(`scutil --dns | grep 'nameserver\\[0\\]' | head -1`);
+  const port1053 = run('lsof -i UDP:1053 -n -P 2>/dev/null | grep mihomo | head -1');
+  const pfEnabled = run('sudo pfctl -s info 2>/dev/null | grep "Status"');
+  console.log(c.bold('\n── DNS 状态 ──────────────────────────────────'));
+  console.log(`  系统 DNS : ${c.cyan(sysDns.replace(/.*:/,'').trim() || '?')}`);
+  console.log(`  Mihomo 监听 1053 : ${port1053 ? c.green('✓') : c.red('✗')}`);
+  console.log(`  pf 状态  : ${pfEnabled || c.dim('未知')}`);
+  const pfOn = pfEnabled.includes('Enabled');
+  const mihomoIsDns = sysDns.includes('127.0.0.1');
+  if (pfOn && mihomoIsDns) console.log(`  接管状态 : ${c.green('已接管（防污染 DNS 生效）')}`);
+  else                      console.log(`  接管状态 : ${c.dim('未接管（使用默认 DNS）')}`);
+}
+
+// ─── 命令：autostart ──────────────────────────────────────────
+function cmdAutostart(action) {
+  const fs = require('fs');
+  const on  = fs.existsSync(PLIST) && !fs.existsSync(PLIST_DISABLED);
+  const off = fs.existsSync(PLIST_DISABLED);
+
+  if (!action) {
+    // 显示状态
+    console.log(`\n  开机自启: ${on ? c.green('已启用') : c.dim('已禁用')}`);
+    console.log(c.dim(`  启用: mihomo-ctl autostart on`));
+    console.log(c.dim(`  禁用: mihomo-ctl autostart off`));
+    return;
+  }
+
+  if (action === 'on') {
+    if (off) {
+      // 从 disabled 恢复
+      fs.renameSync(PLIST_DISABLED, PLIST);
+    } else if (!fs.existsSync(PLIST)) {
+      console.log(c.red('✗ plist 文件不存在，请重新安装'));
+      return;
+    }
+    run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+    console.log(c.green('✓ 已启用开机自启'));
+    console.log(c.dim(`  plist: ${PLIST}`));
+  } else if (action === 'off') {
+    if (on) {
+      run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+      fs.renameSync(PLIST, PLIST_DISABLED);
+    }
+    console.log(c.dim('✓ 已禁用开机自启（当前进程不受影响）'));
+    console.log(c.dim(`  plist 已更名为: ${PLIST_DISABLED}`));
+  } else {
+    console.log('用法: mihomo-ctl autostart [on|off]');
+  }
+}
+
+// ─── 命令：upgrade ─────────────────────────────────────────────
+async function cmdUpgrade() {
+  const fs = require('fs');
+  const pl = detectPlatform();
+  console.log(c.bold('\n── Mihomo 无缝升级 ──────────────────────────'));
+  console.log(c.dim(`  平台: ${pl} / ${process.arch === 'arm64' ? 'arm64' : 'amd64'}\n`));
+
+  // 1. 查询最新版本
+  process.stdout.write('  查询最新版本... ');
+  let latest;
+  try {
+    const out = run(`curl -sf --max-time 10 "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"`);
+    if (!out) { console.log(c.red('获取失败，检查网络')); return; }
+    latest = JSON.parse(out).tag_name;
+  } catch (e) { console.log(c.red(`失败: ${e.message}`)); return; }
+
+  const verOut  = run(`"${BIN}" -v 2>/dev/null`);
+  const current = (verOut.match(/v[\d]+\.[\d]+\.[\d]+(?:-[a-z0-9]+)?/i) || [])[0] || '';
+  console.log(`最新 ${c.green(latest)}  当前 ${current === latest ? c.green(current) : c.yellow(current || '未检测')}`);
+  if (current === latest) { console.log(c.green('  已是最新版本')); return; }
+
+  // 2. 构建下载地址
+  const osMap  = { darwin: 'darwin', linux: 'linux', freebsd: 'freebsd' };
+  const osName = osMap[process.platform] || 'linux';
+  const arch   = process.arch === 'arm64' ? 'arm64' : 'amd64';
+  const url    = `https://github.com/MetaCubeX/mihomo/releases/download/${latest}/mihomo-${osName}-${arch}-${latest}.gz`;
+  const tmpGz  = `/tmp/mihomo-new-${latest}.gz`;
+  const tmpBin = `/tmp/mihomo-new-${latest}`;
+  const bkBin  = `/tmp/mihomo-old-${current || 'prev'}`;
+
+  // 3. 预下载（进程仍在运行中，最大化在线时间）
+  const wasRunning = await isRunning();
+  if (wasRunning) console.log(c.green(`  ✓ 进程运行中，预下载中（代理不中断）...`));
+  console.log(c.dim(`    ${url}`));
+  run(`curl -4 -L -C - --max-time 180 -o "${tmpGz}" "${url}" 2>/dev/null`);
+  if (!fs.existsSync(tmpGz) || fs.statSync(tmpGz).size < 500000) {
+    console.log(c.red('✗ 下载失败或文件过小，请检查网络'));
+    try { fs.unlinkSync(tmpGz); } catch {}
+    return;
+  }
+  run(`gunzip -f "${tmpGz}"`);
+  if (!fs.existsSync(tmpBin)) { console.log(c.red('✗ 解压失败')); return; }
+  run(`chmod +x "${tmpBin}"`);
+  console.log(c.green('  ✓ 下载解压完成'));
+
+  // 4. 自动备份配置（升级前保护）
+  const ts        = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  const backupDir = `${process.env.HOME}/.config/mihomo/backups/${ts}`;
+  fs.mkdirSync(backupDir, { recursive: true });
+  if (fs.existsSync(CONFIG)) {
+    fs.copyFileSync(CONFIG, `${backupDir}/config.yaml`);
+    console.log(c.dim(`  配置已备份: ${backupDir}/config.yaml`));
+  }
+
+  // 5. 停止服务（停机从这里开始，已下载完，停机时间极短）
+  if (wasRunning) {
+    process.stdout.write('  停止服务... ');
+    serviceStop();
+    await new Promise(r => setTimeout(r, 800));
+    console.log('done');
+  }
+
+  // 6. 备份旧二进制 + 原子替换新二进制
+  if (fs.existsSync(BIN)) run(`sudo cp "${BIN}" "${bkBin}" 2>/dev/null`);
+  try {
+    execSync(`sudo mv "${tmpBin}" "${BIN}"`, { stdio: 'pipe' });
+    run(`xattr -d com.apple.quarantine "${BIN}" 2>/dev/null || true`);
+  } catch (e) {
+    console.log(c.red(`✗ 安装失败: ${e.message}`));
+    run(`sudo mv "${bkBin}" "${BIN}" 2>/dev/null || true`);
+    console.log(c.yellow('  已回滚旧版本'));
+    if (wasRunning) { serviceStart(); await new Promise(r => setTimeout(r, 1500)); }
+    return;
+  }
+
+  // 7. 启动新版本并验证
+  if (wasRunning) {
+    process.stdout.write('  启动新版本... ');
+    serviceStart();
+    await new Promise(r => setTimeout(r, 1800));
+    if (await isRunning()) {
+      const newOut = run(`"${BIN}" -v 2>/dev/null`);
+      const newVer = (newOut.match(/v[\d]+\.[\d]+\.[\d]+(?:-[a-z0-9]+)?/i) || [])[0] || latest;
+      console.log(c.green(`\n  ✓ 升级成功: ${current || '?'} → ${newVer}`));
+      console.log(c.dim('  代理停机时间: ≈ 3s（预下载完成后才停机）'));
+    } else {
+      console.log(c.red('\n  ✗ 启动失败，自动回滚...'));
+      serviceStop();
+      run(`sudo mv "${bkBin}" "${BIN}" 2>/dev/null || true`);
+      serviceStart();
+      await new Promise(r => setTimeout(r, 1500));
+      if (await isRunning()) console.log(c.yellow('  ⚠ 已回滚到旧版本并重启'));
+      else console.log(c.red('  ✗ 回滚失败，请手动处理'));
+      return;
+    }
+  } else {
+    const newOut = run(`"${BIN}" -v 2>/dev/null`);
+    const newVer = (newOut.match(/v[\d]+\.[\d]+\.[\d]+(?:-[a-z0-9]+)?/i) || [])[0] || latest;
+    console.log(c.green(`  ✓ 升级完成（当前未运行）: ${current || '?'} → ${newVer}`));
+  }
+
+  console.log(c.dim(`  旧二进制: ${bkBin}  配置备份: ${backupDir}/`));
+  console.log(c.dim('  如需回滚: sudo mv ' + bkBin + ' ' + BIN + ' && mihomo-ctl restart'));
+}
+
+
+// ─── 命令：log-on / log-off ────────────────────────────────────
+function setLogLevel(level) {
+  const fs = require('fs');
+  let yaml = fs.readFileSync(CONFIG, 'utf8');
+  yaml = yaml.replace(/^log-level:.*$/m, `log-level: ${level}`);
+  fs.writeFileSync(CONFIG, yaml);
+}
+
+async function cmdLogOn() {
+  setLogLevel('info');
+  // 热更新配置
+  try {
+    await new Promise((resolve, reject) => {
+      const data = JSON.stringify({ 'log-level': 'info' });
+      const req = http.request({
+        hostname: '127.0.0.1', port: 9090, path: '/configs', method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+        timeout: 3000,
+      }, res => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject);
+      req.write(data); req.end();
+    });
+  } catch {}
+  console.log(c.green('✓ 日志已开启 (info)'));
+  console.log(c.dim(`  实时查看: tail -f ${LOG}`));
+  console.log(c.dim('  关闭: mihomo-ctl log-off'));
+}
+
+async function cmdLogOff() {
+  setLogLevel('silent');
+  try {
+    await new Promise((resolve, reject) => {
+      const data = JSON.stringify({ 'log-level': 'silent' });
+      const req = http.request({
+        hostname: '127.0.0.1', port: 9090, path: '/configs', method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+        timeout: 3000,
+      }, res => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject);
+      req.write(data); req.end();
+    });
+  } catch {}
+  console.log(c.dim('✓ 日志已关闭 (silent)'));
+}
+
+// ─── 命令：geo ─────────────────────────────────────────────────
+const GEO_FILES = [
+  { name: 'geoip.dat',   url: 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat' },
+  { name: 'geosite.dat', url: 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat' },
+];
+
+async function cmdGeoUpdate() {
+  const fs = require('fs');
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log(c.bold('\n── GeoIP / GeoSite 更新 ──────────────────────'));
+  let ok = 0;
+  for (const { name, url } of GEO_FILES) {
+    const dst = `${DATA_DIR}/${name}`;
+    const tmp = `/tmp/${name}.tmp`;
+    process.stdout.write(`  下载 ${name}... `);
+    try {
+      run(`curl -4 -L --max-time 60 -o "${tmp}" "${url}" 2>/dev/null`);
+      if (!require('fs').existsSync(tmp) || require('fs').statSync(tmp).size < 100000) {
+        console.log(c.red('✗ 下载失败或文件过小')); continue;
+      }
+      fs.renameSync(tmp, dst);
+      const size = (fs.statSync(dst).size / 1024 / 1024).toFixed(1);
+      console.log(c.green(`✓ ${size} MB`));
+      ok++;
+    } catch (e) { console.log(c.red(`✗ ${e.message}`)); }
+  }
+  if (ok > 0) {
+    if (await isRunning()) {
+      process.stdout.write('  通知 Mihomo 热重载... ');
+      try { await cmdReload(true); console.log(c.green('✓')); }
+      catch { console.log(c.yellow('⚠ 热重载失败，重启生效: mihomo-ctl restart')); }
+    } else {
+      console.log(c.dim('  Mihomo 未运行，下次启动时生效'));
+    }
+  }
+}
+
+function cmdGeoSchedule(action) {
+  const fs = require('fs');
+  const logPath = `${process.env.HOME}/.config/mihomo/logs/geo-update.log`;
+  const cronLine = `0 3 * * 1 /usr/local/bin/mihomo-ctl geo update >> "${logPath}" 2>&1 ${GEO_CRON_TAG}`;
+  const current = run('crontab -l 2>/dev/null') || '';
+  const hasJob  = current.includes(GEO_CRON_TAG);
+
+  if (!action) {
+    console.log(hasJob
+      ? c.green('  GeoIP 定时更新: 已启用（每周一 03:00）')
+      : c.dim('  GeoIP 定时更新: 未启用'));
+    console.log(c.dim('  启用: mihomo-ctl geo schedule'));
+    console.log(c.dim('  禁用: mihomo-ctl geo unschedule'));
+    return;
+  }
+  const writeCrontab = content => {
+    const tmp = '/tmp/mihomo-crontab.tmp';
+    fs.writeFileSync(tmp, content.trim() ? content.trim() + '\n' : '');
+    run(content.trim() ? `crontab "${tmp}"` : 'crontab -r 2>/dev/null || true');
+    try { fs.unlinkSync(tmp); } catch {}
+  };
+  if (action === 'schedule') {
+    if (hasJob) { console.log(c.dim('  定时任务已存在')); return; }
+    writeCrontab(current ? `${current}\n${cronLine}` : cronLine);
+    console.log(c.green('✓ 已设置 GeoIP 每周一 03:00 自动更新'));
+    console.log(c.dim(`  日志: ${logPath}`));
+  } else if (action === 'unschedule') {
+    writeCrontab(current.split('\n').filter(l => !l.includes(GEO_CRON_TAG)).join('\n'));
+    console.log(c.dim('✓ GeoIP 定时更新已取消'));
+  }
+}
+
+async function cmdGeo(sub) {
+  if (sub === 'update')     return cmdGeoUpdate();
+  if (sub === 'schedule')   return cmdGeoSchedule('schedule');
+  if (sub === 'unschedule') return cmdGeoSchedule('unschedule');
+  const fs = require('fs');
+  console.log(c.bold('\n── GeoIP 状态 ────────────────────────────────'));
+  for (const { name } of GEO_FILES) {
+    const p = `${DATA_DIR}/${name}`;
+    if (fs.existsSync(p)) {
+      const days = Math.floor((Date.now() - fs.statSync(p).mtimeMs) / 86400000);
+      const size = (fs.statSync(p).size / 1024 / 1024).toFixed(1);
+      const age  = days === 0 ? '今天' : `${days} 天前`;
+      console.log(`  ${name.padEnd(16)} ${(size + ' MB').padEnd(10)} 更新于 ${days > 30 ? c.yellow(age) : c.dim(age)}`);
+    } else {
+      console.log(`  ${name.padEnd(16)} ${c.red('未下载')}`);
+    }
+  }
+  console.log('');
+  cmdGeoSchedule(null);
+  console.log(c.dim('\n  立即更新: mihomo-ctl geo update'));
+}
+
+// ─── 命令：reload ──────────────────────────────────────────────
+async function cmdReload(quiet = false) {
+  if (!(await isRunning())) {
+    if (!quiet) console.log(c.red('Mihomo 未运行'));
+    return;
+  }
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ path: CONFIG });
+    const req  = http.request({
+      hostname: '127.0.0.1', port: 9090,
+      path: '/configs?force=true', method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 5000,
+    }, res => {
+      res.resume();
+      if (!quiet) {
+        if (res.statusCode === 204) console.log(c.green('✓ 配置已热重载（连接不中断）'));
+        else console.log(c.yellow(`⚠ 返回 ${res.statusCode}，查看日志: mihomo-ctl log-on`));
+      }
+      resolve(res.statusCode);
+    });
+    req.on('error', e => { if (!quiet) console.log(c.red(`✗ ${e.message}`)); reject(e); });
+    req.write(body); req.end();
+  });
+}
+
+// ─── 命令：mode ────────────────────────────────────────────────
+async function cmdMode(mode) {
+  if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
+  const validModes = ['rule', 'global', 'direct'];
+  if (!mode) {
+    const cfg = await apiGet('/configs').catch(() => ({}));
+    console.log(`\n  当前模式: ${c.cyan(cfg.mode || '?')}`);
+    console.log(c.dim('  切换: mihomo-ctl mode [rule|global|direct]'));
+    return;
+  }
+  if (!validModes.includes(mode)) {
+    console.log(c.red(`✗ 无效模式: ${mode}\n  可选: rule | global | direct`)); return;
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      const data = JSON.stringify({ mode });
+      const req  = http.request({
+        hostname: '127.0.0.1', port: 9090, path: '/configs', method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+        timeout: 3000,
+      }, res => { res.resume(); resolve(); });
+      req.on('error', reject); req.write(data); req.end();
+    });
+    // 同步写入配置文件，避免重启后回滚
+    const fs = require('fs');
+    if (fs.existsSync(CONFIG)) {
+      fs.writeFileSync(CONFIG, fs.readFileSync(CONFIG, 'utf8').replace(/^mode:.*$/m, `mode: ${mode}`));
+    }
+    const labels = { rule: '规则分流', global: '全局代理（全部流量走代理）', direct: '全局直连（跳过代理）' };
+    console.log(c.green(`✓ 模式已切换 → ${labels[mode]}`));
+  } catch (e) { console.log(c.red(`✗ 切换失败: ${e.message}`)); }
+}
+
+// ─── 命令：traffic ─────────────────────────────────────────────
+async function cmdTraffic() {
+  if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
+  console.log(c.bold('\n── 实时流量 ─────────────────────────────────'));
+  console.log(c.dim('  按 Ctrl+C 退出\n'));
+  const fmtSpeed = b => b > 1e6 ? `${(b/1e6).toFixed(1)} MB/s` : b > 1e3 ? `${(b/1e3).toFixed(0)} KB/s` : `${b} B/s`;
+  const req = http.get(`${API}/traffic`, { timeout: 0 }, res => {
+    res.on('data', chunk => {
+      try {
+        // SSE 每行可能带 "data: " 前缀
+        const raw = chunk.toString().replace(/^data:\s*/m, '').trim();
+        const { up = 0, down = 0 } = JSON.parse(raw);
+        process.stdout.write(`\r  \u2191 ${c.yellow(fmtSpeed(up).padEnd(12))}  \u2193 ${c.cyan(fmtSpeed(down).padEnd(12))}  `);
+      } catch {}
+    });
+    res.on('end', () => console.log('\n  连接已关闭'));
+  });
+  req.on('error', e => console.log(c.red(`✗ ${e.message}`)));
+  process.on('SIGINT', () => { req.destroy(); console.log(''); process.exit(0); });
+}
+
+// ─── 命令：connections ─────────────────────────────────────────
+async function cmdConnections(action) {
+  if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
+  if (action === 'close-all') {
+    await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: 9090, path: '/connections', method: 'DELETE', timeout: 3000,
+      }, res => { res.resume(); resolve(); });
+      req.on('error', reject); req.end();
+    });
+    console.log(c.green('✓ 已关闭所有连接'));
+    return;
+  }
+  const data  = await apiGet('/connections');
+  const conns = data.connections || [];
+  const { downloadTotal = 0, uploadTotal = 0 } = data;
+  const fmtB  = b => b > 1e9 ? `${(b/1e9).toFixed(2)} GB` : b > 1e6 ? `${(b/1e6).toFixed(1)} MB` : b > 1e3 ? `${(b/1e3).toFixed(0)} KB` : `${b} B`;
+  console.log(c.bold(`\n── 活跃连接 (${conns.length}) ─────────────────────────`));
+  console.log(`  总计: \u2193${c.cyan(fmtB(downloadTotal))}  \u2191${c.yellow(fmtB(uploadTotal))}\n`);
+  for (const conn of conns.slice(0, 25)) {
+    const host  = (conn.metadata?.host || conn.metadata?.destinationIP || '?').padEnd(36);
+    const chain = (conn.chains || []).join(' → ');
+    console.log(`  ${c.cyan(host)} \u2193${fmtB(conn.download||0).padStart(8)}  \u2191${fmtB(conn.upload||0).padStart(8)}  ${c.dim(chain)}`);
+  }
+  if (conns.length > 25) console.log(c.dim(`  ... 还有 ${conns.length - 25} 条`));
+  console.log(c.dim('\n  断开所有连接: mihomo-ctl connections close-all'));
+}
+
+// ─── 命令：check ────────────────────────────────────────────────
+function cmdCheck() {
+  console.log(c.bold('\n── 配置语法检查 ──────────────────────────────'));
+  console.log(c.dim(`  文件: ${CONFIG}\n`));
+  const result = run(`"${BIN}" -t -d "${process.env.HOME}/.config/mihomo" 2>&1`);
+  if (/success|parse config/i.test(result) || result === '') {
+    console.log(c.green('✓ 配置文件语法正确'));
+  } else {
+    console.log(c.red('✗ 配置文件存在错误:\n'));
+    result.split('\n').forEach(l => console.log('  ' + (l.includes('ERR') ? c.red(l) : c.yellow(l))));
+    console.log(c.dim('\n  修复后热重载: mihomo-ctl reload'));
+  }
+}
+
+// ─── 命令：start / stop / restart ─────────────────────────────
+async function cmdStart() {
+  const fs = require('fs');
+  // 如果已运行则不重复启动
+  if (run('pgrep -f \'mihomo -d\' 2>/dev/null')) {
+    console.log(c.yellow('⚠ Mihomo 已在运行，自动确认系统代理状态...'));
+    await cmdProxyOn();
+    return;
+  }
+  // 若 plist 被禁用（.disabled），临时 load 但不改文件名
+  const plistToLoad = fs.existsSync(PLIST) ? PLIST : (fs.existsSync(PLIST_DISABLED) ? PLIST_DISABLED : null);
+  if (!plistToLoad) { console.log(c.red('✗ 找不到 plist，请重新安装')); return; }
+  console.log('启动 Mihomo...');
+  if (plistToLoad === PLIST_DISABLED) {
+    exec(`/usr/local/bin/mihomo -d ${process.env.HOME}/.config/mihomo >> "${LOG}" 2>&1 &`);
+  } else {
+    run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+  }
+  setTimeout(async () => {
+    if (await isRunning()) {
+      console.log(c.green('✓ 已启动'));
+      await cmdProxyOn();
+    } else {
+      console.log(c.red(`✗ 启动失败，开启日志后重试: mihomo-ctl log-on && mihomo-ctl restart`));
+    }
+  }, 1500);
+}
+
+function isDnsManagedByMihomo() {
+  const fs = require('fs');
+  if (!fs.existsSync(DNS_BACKUP_FILE)) return false;
+  const sysDns = run('scutil --dns 2>/dev/null | grep "nameserver\\[0\\]" | head -1');
+  return sysDns.includes('127.0.0.1');
+}
+
+async function cmdStop() {
+  const dnsManaged   = isDnsManagedByMihomo();
+  const proxyManaged = isSystemProxySetToMihomo();
+  process.stdout.write(proxyManaged ? '  系统代理接管中，先关闭代理... ' : '  关闭系统代理... ');
+  await cmdProxyOff();
+  if (dnsManaged) {
+    console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
+    await cmdDnsOff();
+  }
+  console.log('停止 Mihomo...');
+  run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+  run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+  setTimeout(async () => {
+    if (!(await isRunning())) {
+      const notes = ['系统代理已关闭', dnsManaged && 'DNS 已恢复 DHCP'].filter(Boolean);
+      console.log(c.green('✓ 已停止' + (notes.length ? '，' + notes.join('，') : '')));
+    } else {
+      console.log(c.yellow('进程仍在，手动: sudo kill $(pgrep -f "mihomo -d")'));
+    }
+  }, 1000);
+}
+
+async function cmdRestart() {
+  const dnsManaged   = isDnsManagedByMihomo();
+  const proxyManaged = isSystemProxySetToMihomo();
+  process.stdout.write(proxyManaged ? '  系统代理接管中，先关闭代理... ' : '  关闭系统代理... ');
+  await cmdProxyOff();
+  if (dnsManaged) {
+    console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
+    await cmdDnsOff();
+  }
+  console.log('重启 Mihomo...');
+  run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+  run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+  setTimeout(() => {
+    const fs = require('fs');
+    if (fs.existsSync(PLIST)) run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+    else exec(`/usr/local/bin/mihomo -d ${process.env.HOME}/.config/mihomo >> "${LOG}" 2>&1 &`);
+    setTimeout(async () => {
+      if (await isRunning()) {
+        console.log(c.green('✓ 已重启'));
+        await cmdProxyOn();
+        if (dnsManaged)   await cmdDnsOn();
+      } else {
+        console.log(c.red('✗ 重启失败，开启日志: mihomo-ctl log-on && mihomo-ctl restart'));
+      }
+    }, 1500);
+  }, 1000);
+}
+
+// ─── 命令：log ─────────────────────────────────────────────────
+function cmdLog() {
+  const fs = require('fs');
+  if (!fs.existsSync(LOG) || fs.statSync(LOG).size === 0) {
+    console.log(c.dim('  日志为空（当前日志级别: silent）'));
+    console.log(c.dim('  开启日志: mihomo-ctl log-on'));
+    return;
+  }
+  console.log(c.dim(`日志文件: ${LOG}\n`));
+  try {
+    const lines = execSync(`tail -50 "${LOG}"`, { encoding: 'utf8' });
+    const colored = lines.split('\n').map(l => {
+      if (l.includes('ERR') || l.includes('error')) return c.red(l);
+      if (l.includes('WARN'))  return c.yellow(l);
+      if (l.includes('INFO'))  return c.dim(l);
+      return l;
+    }).join('\n');
+    console.log(colored);
+  } catch { console.log(c.red('读取日志失败')); }
+  console.log(c.dim(`\n实时查看: tail -f ${LOG}`));
+}
+
+// ─── 命令：backup ──────────────────────────────────────────────
+function cmdBackup() {
+  const fs = require('fs');
+  const ts        = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+  const backupDir = `${process.env.HOME}/.config/mihomo/backups/${ts}`;
+  fs.mkdirSync(backupDir, { recursive: true });
+  let count = 0;
+  if (fs.existsSync(CONFIG)) {
+    fs.copyFileSync(CONFIG, `${backupDir}/config.yaml`);
+    count++;
+  }
+  if (count > 0) {
+    console.log(c.green(`\n  ✓ 配置已备份`));
+    console.log(c.dim(`  位置: ${backupDir}/config.yaml`));
+    console.log(c.dim('  恢复: mihomo-ctl restore'));
+  } else {
+    console.log(c.yellow(`\n  ⚠ 未找到配置文件: ${CONFIG}`));
+  }
+}
+
+// ─── 命令：restore ─────────────────────────────────────────────
+function cmdRestore(dir) {
+  const fs = require('fs');
+  const backupsDir = `${process.env.HOME}/.config/mihomo/backups`;
+  const listBackups = () => {
+    if (!fs.existsSync(backupsDir)) return [];
+    return fs.readdirSync(backupsDir)
+      .filter(f => fs.statSync(`${backupsDir}/${f}`).isDirectory())
+      .sort();
+  };
+
+  if (!dir) {
+    const list = listBackups().reverse();
+    if (list.length === 0) {
+      console.log(c.dim('\n  无可用备份，先运行: mihomo-ctl backup'));
+      return;
+    }
+    console.log(c.bold('\n── 可用备份 ──────────────────────────────────'));
+    list.slice(0, 10).forEach((b, i) => {
+      const files = fs.readdirSync(`${backupsDir}/${b}`).join(', ');
+      console.log(`  ${i === 0 ? c.green('[最新]') : '      '} ${b}  ${c.dim(files)}`);
+    });
+    console.log(c.dim('\n  恢复最新: mihomo-ctl restore latest'));
+    console.log(c.dim('  恢复指定: mihomo-ctl restore <时间戳>'));
+    return;
+  }
+
+  let targetDir;
+  if (dir === 'latest') {
+    const list = listBackups();
+    if (list.length === 0) { console.log(c.red('无可用备份')); return; }
+    targetDir = `${backupsDir}/${list[list.length - 1]}`;
+  } else {
+    targetDir = fs.existsSync(dir) ? dir : `${backupsDir}/${dir}`;
+  }
+  if (!fs.existsSync(targetDir)) { console.log(c.red(`✗ 找不到备份: ${dir}`)); return; }
+  const srcConfig = `${targetDir}/config.yaml`;
+  if (!fs.existsSync(srcConfig)) { console.log(c.red('✗ 备份中无 config.yaml')); return; }
+
+  // 先保存当前配置再覆盖
+  if (fs.existsSync(CONFIG)) {
+    const safeTs  = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    const safeDir = `${backupsDir}/pre-restore-${safeTs}`;
+    fs.mkdirSync(safeDir, { recursive: true });
+    fs.copyFileSync(CONFIG, `${safeDir}/config.yaml`);
+    console.log(c.dim(`  当前配置已另存: ${safeDir}/config.yaml`));
+  }
+  fs.copyFileSync(srcConfig, CONFIG);
+  const label = targetDir.startsWith(backupsDir) ? targetDir.slice(backupsDir.length + 1) : targetDir;
+  console.log(c.green(`\n  ✓ 已从 [${label}] 恢复配置`));
+  console.log(c.dim('  热重载: mihomo-ctl reload'));
+}
+
+// ─── 命令：help ────────────────────────────────────────────────
+function cmdHelp() {
+  console.log(`
+${c.bold('mihomo-ctl')} — Mihomo 代理管理工具
+
+${c.cyan('状态 & 控制')}
+  mihomo-ctl                  查看状态（含 GeoIP 新鲜度、连接数）
+  mihomo-ctl start            启动进程 + 自动开启系统代理
+  mihomo-ctl stop             停止进程 + 自动关闭系统代理
+  mihomo-ctl restart          重启进程 + 自动恢复系统代理
+  mihomo-ctl reload           热重载配置文件（不中断连接）
+  mihomo-ctl upgrade          无缝升级（预下载完成后再停机，自动备份+回滚）
+  mihomo-ctl check            检查配置文件语法
+
+${c.cyan('模式切换')}
+  mihomo-ctl mode             查看当前模式
+  mihomo-ctl mode rule        规则分流（默认）
+  mihomo-ctl mode global      全局代理（全部走代理）
+  mihomo-ctl mode direct      全局直连（跳过代理）
+
+${c.cyan('开机自启（默认禁用）')}
+  mihomo-ctl autostart        查看自启状态
+  mihomo-ctl autostart on     启用开机自启
+  mihomo-ctl autostart off    禁用开机自启
+
+${c.cyan('GeoIP / GeoSite 数据')}
+  mihomo-ctl geo              查看数据文件状态及定时任务
+  mihomo-ctl geo update       立即下载最新 geoip.dat / geosite.dat
+  mihomo-ctl geo schedule     设置每周一 03:00 自动更新（cron）
+  mihomo-ctl geo unschedule   取消自动更新
+
+${c.cyan('配置备份 & 恢复')}
+  mihomo-ctl backup           备份当前 config.yaml（带时间戳）
+  mihomo-ctl restore          列出所有备份
+  mihomo-ctl restore latest   恢复最新备份
+  mihomo-ctl restore <时间戳> 恢复指定备份
+
+${c.cyan('节点管理')}
+  mihomo-ctl proxies          列出所有节点及延迟
+  mihomo-ctl test             测速所有节点（约 10s）
+  mihomo-ctl select           交互式切换节点 ↑↓Enter
+  mihomo-ctl select <组> <节点>  直接切换
+
+${c.cyan('连接监控')}
+  mihomo-ctl traffic          实时流量速率（Ctrl+C 退出）
+  mihomo-ctl connections      列出活跃连接
+  mihomo-ctl connections close-all  断开所有连接
+
+${c.cyan('日志（默认关闭）')}
+  mihomo-ctl log              查看最近 50 行日志
+  mihomo-ctl log-on           开启日志 (info)
+  mihomo-ctl log-off          关闭日志 (silent)
+  tail -f ~/.config/mihomo/logs/mihomo.log
+
+${c.cyan('系统代理（需 sudo，浏览器）')}
+  mihomo-ctl proxy-on         接管系统 HTTP/HTTPS/SOCKS 代理
+  mihomo-ctl proxy-off        关闭系统代理（浏览器恢复直连）
+
+${c.cyan('DNS 防污染（需 sudo）')}
+  mihomo-ctl dns              查看 DNS 接管状态
+  mihomo-ctl dns-on           接管系统 DNS → Mihomo DoH
+  mihomo-ctl dns-off          恢复系统 DNS（DHCP）
+
+${c.cyan('终端临时代理')}
+  export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890
+  unset https_proxy http_proxy
+
+${c.cyan('配置文件')}
+  ~/.config/mihomo/config.yaml
+  ~/.config/mihomo/data/        geoip.dat / geosite.dat
+  ~/.config/mihomo/logs/        mihomo.log / geo-update.log
+  ${PLIST}
+`);
+}
+
+// ─── 入口 ──────────────────────────────────────────────────────
+const [,, cmd, ...args] = process.argv;
+
+(async () => {
+  switch (cmd) {
+    case 'status':  await cmdStatus();  break;
+    case 'proxies': await cmdProxies(); break;
+    case 'test':    await cmdTest();    break;
+    case 'select':  await cmdSelect(args[0], args[1]); break;
+    case 'start':      await cmdStart();     break;
+    case 'stop':       await cmdStop();      break;
+    case 'restart':    await cmdRestart();   break;
+    case 'reload':     await cmdReload();    break;
+    case 'upgrade':    await cmdUpgrade();   break;
+    case 'check':      cmdCheck();           break;
+    case 'mode':       await cmdMode(args[0]); break;
+    case 'geo':        await cmdGeo(args[0]); break;
+    case 'traffic':    await cmdTraffic();   break;
+    case 'connections': await cmdConnections(args[0]); break;
+    case 'backup':     cmdBackup();          break;
+    case 'restore':    cmdRestore(args[0]);  break;
+    case 'autostart':  cmdAutostart(args[0]); break;
+    case 'log':        cmdLog();             break;
+    case 'log-on':     await cmdLogOn();     break;
+    case 'log-off':    await cmdLogOff();    break;
+    case 'proxy-on':   await cmdProxyOn();   break;
+    case 'proxy-off':  await cmdProxyOff();  break;
+    case 'dns-on':     await cmdDnsOn();     break;
+    case 'dns-off':    await cmdDnsOff();    break;
+    case 'dns':        await cmdDnsStatus(); break;
+    case 'help': case '--help': case '-h': cmdHelp(); break;
+    default:
+      await cmdStatus();
+      console.log(c.dim('\n运行 mihomo-ctl help 查看所有命令'));
+  }
+})();

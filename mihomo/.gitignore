@@ -1,0 +1,8 @@
+# GeoIP / GeoSite 数据文件（体积大，安装时下载）
+data/*.dat
+
+# 运行时日志
+logs/*.log
+
+# 临时文件
+/tmp/mihomo-*

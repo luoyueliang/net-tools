@@ -1,0 +1,16 @@
+[Unit]
+Description=Mihomo (Clash Meta) proxy service
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+ExecStart=/usr/local/bin/mihomo -d /home/__USER__/.config/mihomo
+WorkingDirectory=/home/__USER__/.config/mihomo
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/__USER__/.config/mihomo/logs/mihomo.log
+StandardError=append:/home/__USER__/.config/mihomo/logs/mihomo.log
+
+[Install]
+WantedBy=multi-user.target

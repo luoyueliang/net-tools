@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# Alpine Linux OpenRC init script for Mihomo
+# Install: sudo cp mihomo.openrc /etc/init.d/mihomo && sudo chmod +x /etc/init.d/mihomo
+# Enable:  sudo rc-update add mihomo default && sudo rc-service mihomo start
+
+description="Mihomo proxy daemon"
+
+command="/usr/local/bin/mihomo"
+command_args="-d /home/__USER__/.config/mihomo"
+command_user="__USER__"
+pidfile="/run/mihomo.pid"
+command_background=true
+
+output_log="/home/__USER__/.config/mihomo/logs/mihomo.log"
+error_log="/home/__USER__/.config/mihomo/logs/mihomo.log"
+
+depend() {
+    after net
+    use dns logger
+    after firewall
+}
+
+start_pre() {
+    mkdir -p "/home/__USER__/.config/mihomo/logs"
+    checkpath --directory --owner "__USER__:__USER__" /run
+}

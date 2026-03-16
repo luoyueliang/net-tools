@@ -1,0 +1,44 @@
+#!/bin/sh /etc/rc.common
+# OpenWrt init.d script for Mihomo
+# Install: cp mihomo.init /etc/init.d/mihomo && chmod +x /etc/init.d/mihomo
+# Enable: /etc/init.d/mihomo enable && /etc/init.d/mihomo start
+
+START=99
+STOP=10
+
+MIHOMO_BIN=/usr/local/bin/mihomo
+MIHOMO_CONF=/etc/mihomo
+MIHOMO_LOG=/var/log/mihomo/mihomo.log
+PIDFILE=/var/run/mihomo.pid
+
+start() {
+    mkdir -p "$(dirname ${MIHOMO_LOG})"
+    echo "Starting mihomo..."
+    ${MIHOMO_BIN} -d ${MIHOMO_CONF} >> ${MIHOMO_LOG} 2>&1 &
+    echo $! > ${PIDFILE}
+    echo "Started (PID: $(cat ${PIDFILE}))"
+}
+
+stop() {
+    if [ -f "${PIDFILE}" ]; then
+        kill "$(cat ${PIDFILE})" 2>/dev/null
+        rm -f "${PIDFILE}"
+        echo "Stopped mihomo."
+    else
+        killall mihomo 2>/dev/null && echo "Stopped mihomo." || echo "mihomo is not running."
+    fi
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+    if [ -f "${PIDFILE}" ] && kill -0 "$(cat ${PIDFILE})" 2>/dev/null; then
+        echo "mihomo is running (PID: $(cat ${PIDFILE}))"
+    else
+        echo "mihomo is not running"
+    fi
+}

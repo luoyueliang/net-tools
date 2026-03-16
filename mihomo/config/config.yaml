@@ -1,0 +1,139 @@
+# Clash Meta (Mihomo) 配置模板
+# 复制此文件到 ~/.config/mihomo/config.yaml 后填入你的节点信息
+# 注意：VLESS+Reality 需要 Clash Meta，普通 ClashX 不支持
+
+mixed-port: 7890        # HTTP/SOCKS5 混合端口
+allow-lan: false
+mode: rule
+log-level: silent
+ipv6: false
+external-controller: 127.0.0.1:9090
+
+# DNS 配置 - 本地接管，防污染
+# 监听 127.0.0.1:1053，配合 pf 规则接管系统 DNS
+# 使用: mihomo-ctl dns-on   开启 DNS 接管
+#       mihomo-ctl dns-off  恢复系统 DNS
+dns:
+  enable: true
+  ipv6: false
+  listen: 127.0.0.1:1053
+  enhanced-mode: redir-host   # 返回真实 IP，兼容性好
+  default-nameserver:         # 用于引导解析 DoH 服务器域名
+    - 223.5.5.5
+    - 114.114.114.114
+  nameserver:                 # 国内域名用国内 DoH（干净、快）
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  fallback:                   # 国外域名用国际 DoH（走代理，防污染）
+    - tls://1.1.1.1:853
+    - https://dns.google/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:                   # 被污染的 IP 段触发 fallback
+      - 240.0.0.0/4
+      - 0.0.0.0/8
+
+proxies:
+  # 示例 1：VLESS + Reality（推荐主力节点类型）
+  - name: "proxy-vless-reality"
+    type: vless
+    server: __YOUR_SERVER_HOST__     # 替换为你的服务器地址
+    port: 8443
+    uuid: __YOUR_UUID__              # 替换为你的 UUID
+    network: tcp
+    tls: true
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: __REALITY_PUBLIC_KEY__  # 替换为 Reality 公钥
+      short-id: __REALITY_SHORT_ID__      # 替换为 short-id
+    servername: www.microsoft.com
+    client-fingerprint: chrome
+
+  # 示例 2：VMess（TCP）
+  - name: "proxy-vmess"
+    type: vmess
+    server: __YOUR_SERVER_HOST__
+    port: 1082
+    uuid: __YOUR_UUID__
+    alterId: 0
+    cipher: auto
+
+  # 示例 3：VMess + WS + TLS
+  - name: "proxy-vmess-ws"
+    type: vmess
+    server: __YOUR_SERVER_HOST__
+    port: 443
+    uuid: __YOUR_UUID__
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    skip-cert-verify: false
+    servername: __YOUR_SERVER_HOST__
+    ws-opts:
+      path: /ray
+      headers:
+        Host: __YOUR_SERVER_HOST__
+
+proxy-groups:
+  # 自动选择延迟最低节点
+  - name: "🚀 自动选择"
+    type: url-test
+    proxies:
+      - proxy-vless-reality
+      - proxy-vmess
+      - proxy-vmess-ws
+    url: "https://www.gstatic.com/generate_204"
+    interval: 120
+    tolerance: 50
+
+  # 手动选择（包含所有节点）
+  - name: "⚡ 手动选择"
+    type: select
+    proxies:
+      - 🚀 自动选择
+      - proxy-vless-reality
+      - proxy-vmess
+      - proxy-vmess-ws
+      - DIRECT
+
+  # 兜底策略
+  - name: "🌐 默认出口"
+    type: select
+    proxies:
+      - 🚀 自动选择
+      - ⚡ 手动选择
+      - DIRECT
+
+rules:
+  # 局域网直连
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT
+
+  # 国内常用域名直连
+  - DOMAIN-SUFFIX,baidu.com,DIRECT
+  - DOMAIN-SUFFIX,bilibili.com,DIRECT
+  - DOMAIN-SUFFIX,iqiyi.com,DIRECT
+  - DOMAIN-SUFFIX,163.com,DIRECT
+  - DOMAIN-SUFFIX,qq.com,DIRECT
+  - DOMAIN-SUFFIX,wechat.com,DIRECT
+  - DOMAIN-SUFFIX,weixin.qq.com,DIRECT
+  - DOMAIN-SUFFIX,taobao.com,DIRECT
+  - DOMAIN-SUFFIX,tmall.com,DIRECT
+  - DOMAIN-SUFFIX,jd.com,DIRECT
+  - DOMAIN-SUFFIX,weibo.com,DIRECT
+  - DOMAIN-SUFFIX,zhihu.com,DIRECT
+  - DOMAIN-SUFFIX,alipay.com,DIRECT
+  - DOMAIN-SUFFIX,aliyun.com,DIRECT
+  - DOMAIN-SUFFIX,tencent.com,DIRECT
+  - DOMAIN-SUFFIX,bytedance.com,DIRECT
+  - DOMAIN-SUFFIX,douyin.com,DIRECT
+
+  # 中国大陆 IP 直连
+  - GEOIP,CN,DIRECT
+
+  # 兜底走代理
+  - MATCH,🌐 默认出口

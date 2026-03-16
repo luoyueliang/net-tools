@@ -1,0 +1,40 @@
+#!/bin/sh
+# FreeBSD rc.d script for Mihomo
+# Install: cp mihomo.rc /usr/local/etc/rc.d/mihomo && chmod 555 /usr/local/etc/rc.d/mihomo
+# Enable: sysrc mihomo_enable=YES mihomo_user=__USER__
+
+. /etc/rc.subr
+
+name="mihomo"
+rcvar="mihomo_enable"
+
+: ${mihomo_enable:=NO}
+: ${mihomo_user:=__USER__}
+: ${mihomo_config_dir:=/home/${mihomo_user}/.config/mihomo}
+: ${mihomo_log:=${mihomo_config_dir}/logs/mihomo.log}
+
+command="/usr/local/bin/mihomo"
+command_args="-d ${mihomo_config_dir}"
+pidfile="/var/run/${name}.pid"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+
+mihomo_start() {
+    echo "Starting ${name}."
+    /usr/sbin/daemon -p "${pidfile}" -u "${mihomo_user}" \
+        ${command} ${command_args} >> "${mihomo_log}" 2>&1
+}
+
+mihomo_stop() {
+    if [ -f "${pidfile}" ]; then
+        kill "$(cat ${pidfile})" 2>/dev/null
+        rm -f "${pidfile}"
+        echo "Stopped ${name}."
+    else
+        echo "${name} is not running."
+    fi
+}
+
+load_rc_config $name
+run_rc_command "$1"
