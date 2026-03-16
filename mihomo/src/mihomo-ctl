@@ -358,7 +358,10 @@ function getAllNetworkServices() {
 async function cmdProxyOn() {
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
   const services = getAllNetworkServices();
-  require('fs').writeFileSync(PROXY_BACKUP_FILE, JSON.stringify({ services }));
+  // 保存旧 git proxy 以便 proxy-off 时恢复
+  const oldGitHttpProxy  = run('git config --global --get http.proxy  2>/dev/null');
+  const oldGitHttpsProxy = run('git config --global --get https.proxy 2>/dev/null');
+  require('fs').writeFileSync(PROXY_BACKUP_FILE, JSON.stringify({ services, oldGitHttpProxy, oldGitHttpsProxy }));
   let ok = 0, fail = 0;
   for (const svc of services) {
     try {
@@ -368,15 +371,22 @@ async function cmdProxyOn() {
       ok++;
     } catch { fail++; }
   }
+  // git 不读 macOS 系统代理，需单独配置（否则 SNI 劫持会阻断 git push）
+  if (run('which git 2>/dev/null')) {
+    run('git config --global http.proxy  http://127.0.0.1:7890');
+    run('git config --global https.proxy http://127.0.0.1:7890');
+  }
   console.log(c.green(`✓ 系统代理已接管 → 127.0.0.1:7890 (成功 ${ok} 个服务)` + (fail ? c.dim(` 跳过 ${fail} 个`) : '')));
   console.log(c.dim('  关闭: mihomo-ctl proxy-off'));
 }
 
 async function cmdProxyOff() {
-  let services;
+  let services, oldGitHttpProxy, oldGitHttpsProxy;
   try {
     const bak = JSON.parse(require('fs').readFileSync(PROXY_BACKUP_FILE, 'utf8'));
-    services = Array.isArray(bak.services) ? bak.services : null;
+    services         = Array.isArray(bak.services) ? bak.services : null;
+    oldGitHttpProxy  = bak.oldGitHttpProxy  || '';
+    oldGitHttpsProxy = bak.oldGitHttpsProxy || '';
   } catch {}
   if (!services) services = getAllNetworkServices();
   let ok = 0;
@@ -387,6 +397,13 @@ async function cmdProxyOff() {
       execSync(`sudo networksetup -setsocksfirewallproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
       ok++;
     } catch {}
+  }
+  // 恢复 git proxy（若原本无代理则 unset）
+  if (run('which git 2>/dev/null')) {
+    if (oldGitHttpProxy)  run(`git config --global http.proxy  "${oldGitHttpProxy}"`);
+    else                  run('git config --global --unset http.proxy  2>/dev/null || true');
+    if (oldGitHttpsProxy) run(`git config --global https.proxy "${oldGitHttpsProxy}"`);
+    else                  run('git config --global --unset https.proxy 2>/dev/null || true');
   }
   try { require('fs').unlinkSync(PROXY_BACKUP_FILE); } catch {}
   console.log(c.green(`✓ 系统代理已关闭 (共 ${ok} 个服务)`));
