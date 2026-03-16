@@ -423,9 +423,12 @@ async function cmdDnsOn() {
   const iface = getWifiInterface();
   console.log(c.bold(`\n── 开启 DNS 接管 (接口: ${iface}) ─────────────────`));
 
-  // 备份当前 DNS
+  // 备份当前 DNS（区分 DHCP 自动 vs 固定 DNS）
   const currentDns = run(`networksetup -getdnsservers "${iface}"`);
-  require('fs').writeFileSync(DNS_BACKUP_FILE, JSON.stringify({ iface, dns: currentDns }));
+  // macOS 无 DNS 时返回 "There aren't any DNS Servers set on ..."
+  const isDhcp = !currentDns || currentDns.includes("aren't") || currentDns.includes('127.0.0.1');
+  const dnsToRestore = isDhcp ? null : currentDns.trim().split('\n').filter(Boolean);
+  require('fs').writeFileSync(DNS_BACKUP_FILE, JSON.stringify({ iface, dnsToRestore }));
 
   // 写 pf rdr 规则（lo0: 53 → 1053）
   // 使用 com.apple/mihomo-dns 子 anchor，避免覆盖 Apple 自身的 pf 规则
@@ -461,23 +464,55 @@ async function cmdDnsOn() {
 }
 
 async function cmdDnsOff() {
-  const iface = (() => {
-    try {
-      const bak = JSON.parse(require('fs').readFileSync(DNS_BACKUP_FILE, 'utf8'));
-      return bak.iface;
-    } catch { return getWifiInterface(); }
-  })();
+  let iface = getWifiInterface();
+  let dnsToRestore = null;  // null = DHCP
+  try {
+    const bak = JSON.parse(require('fs').readFileSync(DNS_BACKUP_FILE, 'utf8'));
+    if (bak.iface) iface = bak.iface;
+    dnsToRestore = bak.dnsToRestore || null;
+  } catch {}
 
   console.log(c.bold(`\n── 关闭 DNS 接管 (接口: ${iface}) ────────────────`));
   try {
-    // 只清空我们的 anchor，不影响 Apple 的 pf 规则及其他服务
-    execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F all 2>/dev/null || true`, { stdio: 'pipe' });
-    execSync(`sudo networksetup -setdnsservers "${iface}" "Empty"`, { stdio: ['inherit', 'pipe', 'pipe'] });
-    execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
+    // ⚠️  顺序至关重要：必须先让系统 DNS 指向一个实际可用的服务器，
+    //    否则移除 pf anchor 后会出现"DNS=127.0.0.1 但无人监听"的真空。
+
+    // Step 1: 确定用于过渡的 DNS（优先用备份的固定 DNS，否则探测 DHCP/网关）
+    let transitionDns = (dnsToRestore && dnsToRestore.length) ? dnsToRestore : null;
+    if (!transitionDns) {
+      // 尝试从 DHCP 租约拿 DNS
+      const dhcpDns = run(`ipconfig getpacket en0 2>/dev/null | grep domain_name_server | awk '{print $3}' | head -1`).trim()
+                   || run(`ipconfig getpacket en1 2>/dev/null | grep domain_name_server | awk '{print $3}' | head -1`).trim();
+      if (dhcpDns && dhcpDns.match(/^\d+\.\d+\.\d+\.\d+/)) {
+        transitionDns = [dhcpDns.split(',')[0].trim()];
+      } else {
+        // 回退：用默认网关（通常也是 DNS）
+        const gw = run(`netstat -rn | awk '/^default/{print $2; exit}'`).trim();
+        transitionDns = (gw && gw.match(/^\d+\.\d+\.\d+\.\d+/)) ? [gw] : ['8.8.8.8'];
+      }
+    }
+
+    // Step 2: 先把 DNS 切到过渡地址（立即生效，无 DHCP 等待）
+    const dnsArgs = transitionDns.map(s => `"${s}"`).join(' ');
+    execSync(`sudo networksetup -setdnsservers "${iface}" ${dnsArgs}`, { stdio: 'inherit' });
+    // networksetup 会自动通知 mDNSResponder，只需刷新应用层缓存（不需要 sudo）
+    execSync('dscacheutil -flushcache 2>/dev/null || true', { stdio: 'pipe' });
+    await new Promise(r => setTimeout(r, 600));
+
+    // Step 3: 此时 DNS 已经可用，安全地移除 pf anchor
+    // 使用 stdio:'inherit' 确保 sudo 能提示密码，不能静默失败
+    execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F all`, { stdio: 'inherit' });
+
+    // Step 4: 如果原来是 DHCP，最终再设回 Empty 让系统走 DHCP
+    if (!dnsToRestore || !dnsToRestore.length) {
+      execSync(`sudo networksetup -setdnsservers "${iface}" "Empty"`, { stdio: 'inherit' });
+    }
+
     try { require('fs').unlinkSync(DNS_BACKUP_FILE); } catch {}
     try { require('fs').unlinkSync(PF_CONF); } catch {}
     try { require('fs').unlinkSync(DNS_AUTOSTART_FILE); } catch {}
-    console.log(c.green('✓ DNS 已恢复为 DHCP 自动获取'));
+    const restoredDesc = (dnsToRestore && dnsToRestore.length) ? dnsToRestore.join(', ') : `${transitionDns.join(', ')} (将随 DHCP 更新)`;
+    console.log(c.green(`✓ DNS 已恢复为 ${restoredDesc}`));
   } catch (e) {
     console.log(c.red(`✗ 失败: ${e.message}`));
   }
@@ -908,21 +943,26 @@ function cmdCheck() {
 
 // ─── 命令：start / stop / restart ─────────────────────────────
 async function cmdStart() {
-  const fs = require('fs');
-  // 如果已运行则不重复启动
+  const fs   = require('fs');
+  const path = require('path');
+  // 如果已运行则确保代理和 DNS 状态正确
   if (run('pgrep -f \'mihomo -d\' 2>/dev/null')) {
     console.log(c.yellow('⚠ Mihomo 已在运行，自动确认系统代理状态...'));
     await cmdProxyOn();
+    if (fs.existsSync(DNS_AUTOSTART_FILE)) await cmdDnsOn();
     return;
   }
-  // 若 plist 被禁用（.disabled），临时 load 但不改文件名
-  const plistToLoad = fs.existsSync(PLIST) ? PLIST : (fs.existsSync(PLIST_DISABLED) ? PLIST_DISABLED : null);
-  if (!plistToLoad) { console.log(c.red('✗ 找不到 plist，请重新安装')); return; }
+  // 确保日志目录存在（否则 shell 重定向会失败，进程不会启动）
+  const logsDir = path.dirname(LOG);
+  if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+
   console.log('启动 Mihomo...');
-  if (plistToLoad === PLIST_DISABLED) {
-    exec(`/usr/local/bin/mihomo -d ${process.env.HOME}/.config/mihomo >> "${LOG}" 2>&1 &`);
-  } else {
+  const plistToLoad = fs.existsSync(PLIST) ? PLIST : (fs.existsSync(PLIST_DISABLED) ? PLIST_DISABLED : null);
+  if (plistToLoad && plistToLoad !== PLIST_DISABLED) {
     run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+  } else {
+    // 直接启动：plist 不存在或已禁用（autostart off）
+    exec(`/usr/local/bin/mihomo -d "${process.env.HOME}/.config/mihomo" >> "${LOG}" 2>&1 &`);
   }
   setTimeout(async () => {
     if (await isRunning()) {
