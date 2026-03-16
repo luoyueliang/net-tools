@@ -449,7 +449,8 @@ async function cmdDnsOn() {
     if (!loaded.includes('1053')) throw new Error('pf anchor 规则加载后验证失败');
     // 设置系统 DNS
     execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: ['inherit', 'pipe', 'pipe'] });
-    execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
+    // networksetup 已自动通知 mDNSResponder，只需刷新应用层缓存（不需要 sudo）
+    execSync('dscacheutil -flushcache 2>/dev/null || true', { stdio: 'pipe' });
     require('fs').writeFileSync(DNS_AUTOSTART_FILE, '1');
     console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)`) );
     console.log(c.dim('  国内域名 → 阿里/腾讯 DoH (直连)'));
