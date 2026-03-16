@@ -17,7 +17,7 @@
   --text3:     #4a5568;
   --accent:    #6366f1;
   --accent2:   #818cf8;
-  --green:     #22c55e;
+  --green:     #22c55e; 
   --yellow:    #f59e0b;
   --red:       #ef4444;
   --cyan:      #06b6d4;
@@ -853,7 +853,8 @@ function fmtBytes(b) {
   return b + ' B';
 }
 function fmtDelay(d) {
-  if (!d || d === 0) return { text: '—', cls: 'none' };
+  if (d === undefined || d === null) return { text: '—', cls: 'none' };
+  if (d === 0) return { text: '✗', cls: 'high' };
   if (d < 150) return { text: d + 'ms', cls: 'low' };
   if (d < 400) return { text: d + 'ms', cls: 'mid' };
   return { text: d + 'ms', cls: 'high' };

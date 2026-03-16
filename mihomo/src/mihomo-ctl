@@ -362,9 +362,9 @@ async function cmdProxyOn() {
   let ok = 0, fail = 0;
   for (const svc of services) {
     try {
-      execSync(`sudo networksetup -setwebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: 'pipe' });
-      execSync(`sudo networksetup -setsecurewebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: 'pipe' });
-      execSync(`sudo networksetup -setsocksfirewallproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`sudo networksetup -setwebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
+      execSync(`sudo networksetup -setsecurewebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
+      execSync(`sudo networksetup -setsocksfirewallproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
       ok++;
     } catch { fail++; }
   }
@@ -382,9 +382,9 @@ async function cmdProxyOff() {
   let ok = 0;
   for (const svc of services) {
     try {
-      execSync(`sudo networksetup -setwebproxystate "${svc}" off 2>/dev/null`, { stdio: 'pipe' });
-      execSync(`sudo networksetup -setsecurewebproxystate "${svc}" off 2>/dev/null`, { stdio: 'pipe' });
-      execSync(`sudo networksetup -setsocksfirewallproxystate "${svc}" off 2>/dev/null`, { stdio: 'pipe' });
+      execSync(`sudo networksetup -setwebproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
+      execSync(`sudo networksetup -setsecurewebproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
+      execSync(`sudo networksetup -setsocksfirewallproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
       ok++;
     } catch {}
   }
@@ -397,6 +397,7 @@ const PF_CONF = '/tmp/mihomo-dns.pf.conf';
 const PF_TOKEN_FILE = '/tmp/mihomo-dns.pf.token';
 const DNS_BACKUP_FILE = '/tmp/mihomo-dns.backup';
 const PROXY_BACKUP_FILE = '/tmp/mihomo-proxy.backup';
+const DNS_AUTOSTART_FILE = `${process.env.HOME}/.config/mihomo/.dns-autostart`;
 
 function getWifiInterface() {
   // 找第一个活跃的 Wi-Fi 或以太网
@@ -439,6 +440,7 @@ async function cmdDnsOn() {
     // 设置系统 DNS
     execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: 'inherit' });
     execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
+    require('fs').writeFileSync(DNS_AUTOSTART_FILE, '1');
     console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)`) );
     console.log(c.dim('  国内域名 → 阿里/腾讯 DoH (直连)'));
     console.log(c.dim('  国外域名 → 1.1.1.1 / Google DoH (走代理)'));
@@ -466,6 +468,7 @@ async function cmdDnsOff() {
     execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
     try { require('fs').unlinkSync(DNS_BACKUP_FILE); } catch {}
     try { require('fs').unlinkSync(PF_CONF); } catch {}
+    try { require('fs').unlinkSync(DNS_AUTOSTART_FILE); } catch {}
     console.log(c.green('✓ DNS 已恢复为 DHCP 自动获取'));
   } catch (e) {
     console.log(c.red(`✗ 失败: ${e.message}`));
@@ -909,6 +912,7 @@ async function cmdStart() {
     if (await isRunning()) {
       console.log(c.green('✓ 已启动'));
       await cmdProxyOn();
+      if (require('fs').existsSync(DNS_AUTOSTART_FILE)) await cmdDnsOn();
     } else {
       console.log(c.red(`✗ 启动失败，开启日志后重试: mihomo-ctl log-on && mihomo-ctl restart`));
     }
