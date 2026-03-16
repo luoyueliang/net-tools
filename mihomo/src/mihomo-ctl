@@ -427,18 +427,25 @@ async function cmdDnsOn() {
   const currentDns = run(`networksetup -getdnsservers "${iface}"`);
   require('fs').writeFileSync(DNS_BACKUP_FILE, JSON.stringify({ iface, dns: currentDns }));
 
-  // 写 pf 规则（把 lo0 的 53 端口重定向到 1053）
+  // 写 pf rdr 规则（lo0: 53 → 1053）
+  // 使用 com.apple/mihomo-dns 子 anchor，避免覆盖 Apple 自身的 pf 规则
+  // macOS pf anchor 内使用 "rdr on" 语法（不带 pass），rdr-to / rdr pass 均不支持
   const pfConf = [
-    'rdr pass on lo0 proto udp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
-    'rdr pass on lo0 proto tcp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
-  ].join('\n');
+    'rdr on lo0 proto udp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
+    'rdr on lo0 proto tcp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
+  ].join('\n') + '\n';
   require('fs').writeFileSync(PF_CONF, pfConf);
 
   try {
-    // 加载 pf 规则并启用
-    execSync(`sudo pfctl -f "${PF_CONF}" 2>/dev/null; sudo pfctl -e 2>/dev/null || true`, { stdio: 'inherit' });
+    // 加载进 com.apple 子 anchor（/etc/pf.conf 中有 rdr-anchor "com.apple/*"）
+    execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -f "${PF_CONF}"`, { stdio: ['inherit', 'pipe', 'pipe'] });
+    // 确保 pf 已启用
+    execSync('sudo pfctl -e 2>/dev/null || true', { stdio: 'pipe' });
+    // 验证规则已加载
+    const loaded = run(`sudo pfctl -a 'com.apple/mihomo-dns' -sn 2>/dev/null`);
+    if (!loaded.includes('1053')) throw new Error('pf anchor 规则加载后验证失败');
     // 设置系统 DNS
-    execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: 'inherit' });
+    execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: ['inherit', 'pipe', 'pipe'] });
     execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
     require('fs').writeFileSync(DNS_AUTOSTART_FILE, '1');
     console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)`) );
@@ -448,7 +455,7 @@ async function cmdDnsOn() {
   } catch (e) {
     console.log(c.red(`✗ 失败: ${e.message}`));
     console.log(c.dim('  可能需要 sudo 权限，请手动运行:'));
-    console.log(c.cyan(`  sudo pfctl -f "${PF_CONF}" && sudo pfctl -e`));
+    console.log(c.cyan(`  sudo pfctl -a 'com.apple/mihomo-dns' -f "${PF_CONF}" && sudo pfctl -e`));
     console.log(c.cyan(`  sudo networksetup -setdnsservers "${iface}" 127.0.0.1`));
   }
 }
@@ -463,8 +470,9 @@ async function cmdDnsOff() {
 
   console.log(c.bold(`\n── 关闭 DNS 接管 (接口: ${iface}) ────────────────`));
   try {
-    execSync(`sudo pfctl -d 2>/dev/null || true`, { stdio: 'pipe' });
-    execSync(`sudo networksetup -setdnsservers "${iface}" "Empty"`, { stdio: 'inherit' });
+    // 只清空我们的 anchor，不影响 Apple 的 pf 规则及其他服务
+    execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F all 2>/dev/null || true`, { stdio: 'pipe' });
+    execSync(`sudo networksetup -setdnsservers "${iface}" "Empty"`, { stdio: ['inherit', 'pipe', 'pipe'] });
     execSync('sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' });
     try { require('fs').unlinkSync(DNS_BACKUP_FILE); } catch {}
     try { require('fs').unlinkSync(PF_CONF); } catch {}
@@ -478,15 +486,23 @@ async function cmdDnsOff() {
 async function cmdDnsStatus() {
   const sysDns = run(`scutil --dns | grep 'nameserver\\[0\\]' | head -1`);
   const port1053 = run('lsof -i UDP:1053 -n -P 2>/dev/null | grep mihomo | head -1');
-  const pfEnabled = run('sudo pfctl -s info 2>/dev/null | grep "Status"');
+  const anchorRules = run(`sudo pfctl -a 'com.apple/mihomo-dns' -sn 2>/dev/null`);
+  const pfAnchorOk = anchorRules.includes('1053');
   console.log(c.bold('\n── DNS 状态 ──────────────────────────────────'));
   console.log(`  系统 DNS : ${c.cyan(sysDns.replace(/.*:/,'').trim() || '?')}`);
   console.log(`  Mihomo 监听 1053 : ${port1053 ? c.green('✓') : c.red('✗')}`);
-  console.log(`  pf 状态  : ${pfEnabled || c.dim('未知')}`);
-  const pfOn = pfEnabled.includes('Enabled');
+  console.log(`  pf rdr anchor : ${pfAnchorOk ? c.green('✓ 已加载') : c.red('✗ 未加载')}`);
   const mihomoIsDns = sysDns.includes('127.0.0.1');
-  if (pfOn && mihomoIsDns) console.log(`  接管状态 : ${c.green('已接管（防污染 DNS 生效）')}`);
-  else                      console.log(`  接管状态 : ${c.dim('未接管（使用默认 DNS）')}`);
+  if (pfAnchorOk && mihomoIsDns && port1053) console.log(`  接管状态 : ${c.green('已接管（防污染 DNS 生效）')}`);
+  else if (mihomoIsDns && !pfAnchorOk)       console.log(`  接管状态 : ${c.yellow('⚠ 系统 DNS=127.0.0.1 但 pf 规则未加载，运行 dns-on 修复')}`);
+  else                                        console.log(`  接管状态 : ${c.dim('未接管（使用默认 DNS）')}`);
+  // 快速验证实际解析是否可用
+  const canResolve = run('dig +short +time=2 cloudflare.com @127.0.0.1 -p 1053 2>/dev/null');
+  console.log(`  实际解析测试 : ${canResolve ? c.green('✓ ' + canResolve.split('\n')[0]) : c.red('✗ 无响应')}`);
+  if (!pfAnchorOk && mihomoIsDns) {
+    console.log(c.dim('\n  pf anchor 已丢失（常见于睡眠/唤醒或网络切换后），运行:'));
+    console.log(c.cyan('  mihomo-ctl dns-on'));
+  }
 }
 
 // ─── 命令：autostart ──────────────────────────────────────────
