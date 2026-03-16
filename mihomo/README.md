@@ -32,14 +32,18 @@ mihomo/
 │       ├── macos/
 │       │   └── mihomo.plist          # macOS LaunchAgent 模板
 │       ├── linux/
-│       │   └── mihomo.service        # systemd 服务文件        ├── alpine/
-        │   └── mihomo.openrc         # Alpine Linux OpenRC 脚本│       ├── freebsd/
+│       │   └── mihomo.service        # systemd 服务文件
+│       ├── alpine/
+│       │   └── mihomo.openrc         # Alpine Linux OpenRC 脚本
+│       ├── freebsd/
 │       │   └── mihomo.rc             # FreeBSD rc.d 脚本
 │       └── openwrt/
 │           └── mihomo.init           # OpenWrt init.d 脚本
 ├── config/
 │   ├── config.yaml                   # 主配置模板
 │   └── clash-config.yaml             # ClashX Pro 订阅配置模板
+├── ui/
+│   └── index.html                    # Web UI 单文件仪表盘
 ├── data/                             # GeoIP / GeoSite 数据文件目录
 ├── logs/                             # 日志目录
 └── README.md
@@ -133,6 +137,14 @@ mihomo-ctl geo unschedule     取消自动更新
 mihomo-ctl traffic            实时流量速率（Ctrl+C 退出）
 mihomo-ctl connections        列出活跃连接
 mihomo-ctl connections close-all  断开所有连接
+```
+
+**Web UI**
+
+```
+mihomo-ctl ui                 查看 Web UI 安装状态
+mihomo-ctl ui install         安装到 ~/.config/mihomo/ui/（自动写入 external-ui）
+mihomo-ctl ui open            浏览器打开 http://127.0.0.1:9090/ui/
 ```
 
 **配置备份 & 恢复**

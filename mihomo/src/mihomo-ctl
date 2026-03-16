@@ -12,6 +12,7 @@ const LOG      = `${process.env.HOME}/.config/mihomo/logs/mihomo.log`;
 const CONFIG   = `${process.env.HOME}/.config/mihomo/config.yaml`;
 const BIN      = '/usr/local/bin/mihomo';
 const DATA_DIR = `${process.env.HOME}/.config/mihomo/data`;
+const UI_DIR   = `${process.env.HOME}/.config/mihomo/ui`;
 const GEO_CRON_TAG = '# mihomo-geo-update';
 
 // ANSI 颜色
@@ -993,6 +994,75 @@ function cmdLog() {
   console.log(c.dim(`\n实时查看: tail -f ${LOG}`));
 }
 
+// ─── 命令：ui ──────────────────────────────────────────────────
+async function cmdUi(sub) {
+  const fs = require('fs');
+  const path = require('path');
+
+  // 找到本脚本同级的 ../ui/index.html
+  const scriptDir = path.dirname(fs.realpathSync(process.argv[1]));
+  const srcUi     = path.join(scriptDir, '..', 'ui', 'index.html');
+  // 安装位置（mihomo external-ui 指向的目录）
+  const dstUi     = UI_DIR;
+
+  if (sub === 'install') {
+    // 安装 UI 文件到 ~/.config/mihomo/ui/
+    if (!fs.existsSync(srcUi)) {
+      console.log(c.red(`✗ 找不到 UI 源文件: ${srcUi}`));
+      console.log(c.dim('  请从仓库目录运行，或先 git clone net-tools'));
+      return;
+    }
+    fs.mkdirSync(dstUi, { recursive: true });
+    fs.copyFileSync(srcUi, path.join(dstUi, 'index.html'));
+    console.log(c.green(`\n  ✓ UI 已安装: ${dstUi}/index.html`));
+
+    // 写入 config.yaml 的 external-ui 字段
+    if (fs.existsSync(CONFIG)) {
+      let yaml = fs.readFileSync(CONFIG, 'utf8');
+      if (yaml.includes('external-ui:')) {
+        yaml = yaml.replace(/^external-ui:.*$/m, `external-ui: ${dstUi}`);
+      } else if (yaml.includes('external-controller:')) {
+        yaml = yaml.replace(
+          /(external-controller:[^\n]*)/,
+          `$1\nexternal-ui: ${dstUi}`
+        );
+      } else {
+        yaml += `\nexternal-ui: ${dstUi}\n`;
+      }
+      fs.writeFileSync(CONFIG, yaml);
+      console.log(c.dim(`  已更新 config.yaml: external-ui: ${dstUi}`));
+    }
+
+    console.log(c.dim('\n  重载配置: mihomo-ctl reload'));
+    console.log(c.dim(`  访问: http://127.0.0.1:9090/ui/`));
+    console.log(c.dim('  注意: 若 external-controller 仅绑定 127.0.0.1，无法远程访问'));
+    return;
+  }
+
+  if (sub === 'open') {
+    const url = 'http://127.0.0.1:9090/ui/';
+    run(`open "${url}" 2>/dev/null || xdg-open "${url}" 2>/dev/null || echo "${url}"`);
+    return;
+  }
+
+  // 默认：打印状态
+  const installed = fs.existsSync(path.join(dstUi, 'index.html'));
+  console.log(c.bold('\n── Mihomo Web UI ─────────────────────────────'));
+  if (installed) {
+    const stat = fs.statSync(path.join(dstUi, 'index.html'));
+    const days = Math.floor((Date.now() - stat.mtimeMs) / 86400000);
+    console.log(c.green(`  ✓ 已安装  更新于 ${days === 0 ? '今天' : days + ' 天前'}`));
+    console.log(c.dim(`  路径: ${dstUi}/index.html`));
+    console.log(c.dim('  访问: http://127.0.0.1:9090/ui/'));
+  } else {
+    console.log(c.dim('  未安装'));
+    console.log(c.dim('  安装: mihomo-ctl ui install'));
+  }
+  console.log(c.dim('\n  子命令:'));
+  console.log(c.dim('    mihomo-ctl ui install   安装/更新 Web UI'));
+  console.log(c.dim('    mihomo-ctl ui open      浏览器打开'));
+}
+
 // ─── 命令：backup ──────────────────────────────────────────────
 function cmdBackup() {
   const fs = require('fs');
@@ -1097,6 +1167,11 @@ ${c.cyan('GeoIP / GeoSite 数据')}
   mihomo-ctl geo schedule     设置每周一 03:00 自动更新（cron）
   mihomo-ctl geo unschedule   取消自动更新
 
+${c.cyan('Web UI')}
+  mihomo-ctl ui              查看 Web UI 安装状态
+  mihomo-ctl ui install      安装/更新 Web UI 到 ~/.config/mihomo/ui/
+  mihomo-ctl ui open         浏览器打开 http://127.0.0.1:9090/ui/
+
 ${c.cyan('配置备份 & 恢复')}
   mihomo-ctl backup           备份当前 config.yaml（带时间戳）
   mihomo-ctl restore          列出所有备份
@@ -1162,6 +1237,7 @@ const [,, cmd, ...args] = process.argv;
     case 'connections': await cmdConnections(args[0]); break;
     case 'backup':     cmdBackup();          break;
     case 'restore':    cmdRestore(args[0]);  break;
+    case 'ui':         await cmdUi(args[0]); break;
     case 'autostart':  cmdAutostart(args[0]); break;
     case 'log':        cmdLog();             break;
     case 'log-on':     await cmdLogOn();     break;

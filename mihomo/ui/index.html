@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mihomo</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:        #0f1117;
+  --bg2:       #1a1e2e;
+  --bg3:       #232840;
+  --border:    #2e3552;
+  --text:      #e2e8f0;
+  --text2:     #8892a4;
+  --text3:     #4a5568;
+  --accent:    #6366f1;
+  --accent2:   #818cf8;
+  --green:     #22c55e;
+  --yellow:    #f59e0b;
+  --red:       #ef4444;
+  --cyan:      #06b6d4;
+  --radius:    10px;
+  --sidebar-w: 220px;
+  --header-h:  56px;
+}
+body {
+  font-family: -apple-system, 'SF Pro Text', 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; border: none; background: none; color: inherit; font: inherit; }
+input { font: inherit; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Layout ───────────────────────────────────────────────────── */
+#app { display: flex; height: 100vh; }
+
+/* Sidebar */
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+.sidebar-logo {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.sidebar-logo .logo-icon {
+  width: 28px; height: 28px;
+  background: linear-gradient(135deg, var(--accent), var(--cyan));
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px;
+}
+.sidebar-logo small {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text2);
+  letter-spacing: 0;
+  margin-left: 2px;
+}
+.sidebar-nav {
+  flex: 1;
+  padding: 10px 0;
+}
+.nav-section {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text3);
+  padding: 14px 18px 6px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 18px;
+  border-radius: 8px;
+  margin: 1px 8px;
+  font-size: 14px;
+  color: var(--text2);
+  transition: all .15s;
+  cursor: pointer;
+}
+.nav-item:hover { background: var(--bg3); color: var(--text); }
+.nav-item.active { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent2); font-weight: 500; }
+.nav-item .icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text3);
+}
+.sidebar-footer .version { color: var(--text2); font-weight: 500; }
+
+/* Main */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.topbar {
+  height: var(--header-h);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  flex-shrink: 0;
+  gap: 12px;
+}
+.topbar-title { font-size: 16px; font-weight: 600; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.page-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+/* ── Cards ────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--text2);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-title span.badge {
+  background: var(--bg3);
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+/* Stat cards */
+.stat-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.stat-label { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.stat-value { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.stat-value.green { color: var(--green); }
+.stat-value.yellow { color: var(--yellow); }
+.stat-value.red { color: var(--red); }
+.stat-value.cyan { color: var(--cyan); }
+.stat-sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+/* ── Status dot ───────────────────────────────────────────────── */
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+.dot.red   { background: var(--red); }
+.dot.yellow{ background: var(--yellow); }
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: .5; }
+}
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all .15s;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent2); }
+.btn-ghost { background: transparent; border-color: var(--border); color: var(--text2); }
+.btn-ghost:hover { background: var(--bg3); color: var(--text); }
+.btn-danger { background: color-mix(in srgb, var(--red) 15%, transparent); border-color: color-mix(in srgb, var(--red) 30%, transparent); color: var(--red); }
+.btn-danger:hover { background: color-mix(in srgb, var(--red) 25%, transparent); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Mode Tabs ────────────────────────────────────────────────── */
+.mode-tabs { display: flex; gap: 6px; }
+.mode-tab {
+  padding: 6px 16px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  background: transparent;
+  transition: all .15s;
+  font-weight: 500;
+}
+.mode-tab:hover { border-color: var(--accent); color: var(--accent2); }
+.mode-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── Traffic Chart ────────────────────────────────────────────── */
+.traffic-wrap {
+  position: relative;
+  height: 100px;
+  overflow: hidden;
+}
+#trafficCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.traffic-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.traffic-up   { color: var(--yellow); }
+.traffic-down { color: var(--cyan); }
+
+/* ── Proxy Groups ─────────────────────────────────────────────── */
+.group-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg3);
+  cursor: pointer;
+  user-select: none;
+  transition: background .15s;
+}
+.group-header:hover { background: color-mix(in srgb, var(--bg3) 80%, white 5%); }
+.group-name { font-weight: 600; font-size: 14px; flex: 1; }
+.group-type {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg2);
+  color: var(--text2);
+}
+.group-now {
+  font-size: 12px;
+  color: var(--accent2);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-chevron {
+  font-size: 12px;
+  color: var(--text3);
+  transition: transform .2s;
+}
+.group-item.open .group-chevron { transform: rotate(90deg); }
+.nodes-grid {
+  display: none;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg2);
+}
+.group-item.open .nodes-grid { display: grid; }
+.node-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all .15s;
+  position: relative;
+  overflow: hidden;
+}
+.node-card:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.node-card.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.node-card.active::before {
+  content: '';
+  position: absolute; top: 0; left: 0;
+  width: 3px; height: 100%;
+  background: var(--accent);
+}
+.node-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node-type { font-size: 10px; color: var(--text3); margin-top: 3px; }
+.node-delay {
+  font-size: 11px;
+  margin-top: 6px;
+  font-weight: 600;
+}
+.node-delay.low { color: var(--green); }
+.node-delay.mid { color: var(--yellow); }
+.node-delay.high { color: var(--red); }
+.node-delay.none { color: var(--text3); }
+
+/* ── Connections Table ────────────────────────────────────────── */
+.conn-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.conn-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text3);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.conn-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  color: var(--text2);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11.5px;
+}
+.conn-table tr:hover td { background: var(--bg3); color: var(--text); }
+.conn-table .host { color: var(--text); font-weight: 500; font-family: inherit; font-size: 12px; }
+.conn-btn-close {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+  cursor: pointer;
+  transition: all .15s;
+}
+.conn-btn-close:hover { background: color-mix(in srgb, var(--red) 22%, transparent); }
+
+/* ── Toast ────────────────────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  top: 20px; right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 13px;
+  min-width: 240px;
+  max-width: 360px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: slideIn .2s ease;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+}
+.toast.success { border-left: 3px solid var(--green); }
+.toast.error   { border-left: 3px solid var(--red); }
+.toast.info    { border-left: 3px solid var(--accent); }
+@keyframes slideIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── Settings ─────────────────────────────────────────────────── */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.setting-row:last-child { border-bottom: none; }
+.setting-label { font-size: 14px; }
+.setting-desc  { font-size: 12px; color: var(--text2); margin-top: 3px; }
+
+/* Toggle switch */
+.toggle {
+  position: relative;
+  width: 44px; height: 24px;
+  flex-shrink: 0;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; inset: 0;
+  background: var(--bg3);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: .2s;
+  border: 1px solid var(--border);
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 18px; height: 18px;
+  left: 2px; top: 2px;
+  border-radius: 50%;
+  background: var(--text3);
+  transition: .2s;
+}
+input:checked + .toggle-slider { background: var(--accent); border-color: var(--accent); }
+input:checked + .toggle-slider::before { transform: translateX(20px); background: #fff; }
+
+/* ── Logs ─────────────────────────────────────────────────────── */
+.log-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  height: 360px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.log-line { padding: 1px 0; }
+.log-line.err  { color: var(--red); }
+.log-line.warn { color: var(--yellow); }
+.log-line.info { color: var(--text2); }
+
+/* ── Loading spinner ──────────────────────────────────────────── */
+.spinner {
+  width: 18px; height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Empty state ──────────────────────────────────────────────── */
+.empty {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text3);
+  font-size: 14px;
+}
+.empty .icon { font-size: 36px; margin-bottom: 10px; }
+
+/* ── API Config Modal ─────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.6);
+  z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px;
+  width: 400px;
+  max-width: 90vw;
+}
+.modal-title { font-size: 16px; font-weight: 700; margin-bottom: 20px; }
+.form-group { margin-bottom: 16px; }
+.form-label { font-size: 12px; color: var(--text2); margin-bottom: 6px; display: block; }
+.form-input {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color .15s;
+}
+.form-input:focus { border-color: var(--accent); }
+.modal-footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+
+/* ── Page visibility ──────────────────────────────────────────── */
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── Responsive ───────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .sidebar { width: 60px; }
+  .sidebar-logo small, .nav-item span:not(.icon), .nav-section,
+  .sidebar-footer .version-text { display: none; }
+  .sidebar-logo { justify-content: center; padding: 0 10px; }
+  .nav-item { justify-content: center; padding: 10px; margin: 1px 4px; }
+  .page-content { padding: 16px; }
+  .grid-4 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">⚡</div>
+      <div>Mihomo <small>CTL</small></div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">总览</div>
+      <div class="nav-item active" data-page="overview">
+        <span class="icon">◈</span><span>状态总览</span>
+      </div>
+      <div class="nav-section">代理</div>
+      <div class="nav-item" data-page="proxies">
+        <span class="icon">⬡</span><span>节点管理</span>
+      </div>
+      <div class="nav-section">监控</div>
+      <div class="nav-item" data-page="traffic">
+        <span class="icon">⟁</span><span>实时流量</span>
+      </div>
+      <div class="nav-item" data-page="connections">
+        <span class="icon">⊞</span><span>活跃连接</span>
+      </div>
+      <div class="nav-section">系统</div>
+      <div class="nav-item" data-page="logs">
+        <span class="icon">≡</span><span>日志</span>
+      </div>
+      <div class="nav-item" data-page="settings">
+        <span class="icon">⚙</span><span>设置</span>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div><span class="version">—</span> <span class="version-text">Mihomo</span></div>
+      <div id="apiIndicator" style="margin-top:4px;font-size:11px;color:var(--text3)">连接中…</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="pageTitle">状态总览</div>
+      <div class="topbar-right">
+        <div class="mode-tabs" id="modeTabs">
+          <button class="mode-tab" data-mode="rule">规则</button>
+          <button class="mode-tab" data-mode="global">全局</button>
+          <button class="mode-tab" data-mode="direct">直连</button>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnSettings" title="API 设置">⚙</button>
+      </div>
+    </header>
+
+    <div class="page-content">
+
+      <!-- ── Overview ── -->
+      <div id="page-overview" class="page active">
+        <div class="grid-4" style="margin-bottom:16px">
+          <div class="stat-card">
+            <div class="stat-label">运行状态</div>
+            <div class="stat-value" id="statStatus">—</div>
+            <div class="stat-sub" id="statVersion"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">↓ 下载速率</div>
+            <div class="stat-value cyan" id="statDown">—</div>
+            <div class="stat-sub" id="statDownTotal"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">↑ 上传速率</div>
+            <div class="stat-value yellow" id="statUp">—</div>
+            <div class="stat-sub" id="statUpTotal"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">活跃连接</div>
+            <div class="stat-value" id="statConns">—</div>
+            <div class="stat-sub" id="statMode"></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title">▸ 流量趋势</div>
+            <div class="traffic-wrap">
+              <canvas id="trafficCanvas"></canvas>
+            </div>
+            <div class="traffic-labels">
+              <span class="traffic-down" id="tLabelDown">↓ 0 B/s</span>
+              <span class="traffic-up"   id="tLabelUp">↑ 0 B/s</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">▸ 代理出口</div>
+            <div id="outletInfo" style="display:flex;flex-direction:column;gap:10px;margin-top:4px"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">▸ 快捷操作</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px">
+            <button class="btn btn-ghost" onclick="App.reload()">⟳ 热重载配置</button>
+            <button class="btn btn-ghost" onclick="App.testAll()">⚡ 测速所有节点</button>
+            <button class="btn btn-ghost" onclick="App.closeAllConn()">✕ 断开所有连接</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Proxies ── -->
+      <div id="page-proxies" class="page">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div style="font-size:13px;color:var(--text2)">点击分组展开，点击节点切换</div>
+          <button class="btn btn-ghost btn-sm" onclick="App.testAll(true)">⚡ 全部测速</button>
+        </div>
+        <div id="proxyGroups"><div class="empty"><div class="icon">⬡</div>加载中…</div></div>
+      </div>
+
+      <!-- ── Traffic ── -->
+      <div id="page-traffic" class="page">
+        <div class="grid-4" style="margin-bottom:16px">
+          <div class="stat-card">
+            <div class="stat-label">↓ 下载速率</div>
+            <div class="stat-value cyan" id="tStatDown">0 B/s</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">↑ 上传速率</div>
+            <div class="stat-value yellow" id="tStatUp">0 B/s</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">↓ 累计下载</div>
+            <div class="stat-value" id="tStatDownTotal">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">↑ 累计上传</div>
+            <div class="stat-value" id="tStatUpTotal">—</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">▸ 实时速率图</div>
+          <div style="height:220px;position:relative">
+            <canvas id="bigTrafficCanvas" style="width:100%;height:100%"></canvas>
+          </div>
+          <div style="display:flex;gap:20px;margin-top:12px;font-size:12px">
+            <span style="color:var(--cyan)">▬ 下载</span>
+            <span style="color:var(--yellow)">▬ 上传</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Connections ── -->
+      <div id="page-connections" class="page">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div id="connCount" style="font-size:13px;color:var(--text2)">0 个连接</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="App.loadConnections()">⟳ 刷新</button>
+            <button class="btn btn-danger btn-sm" onclick="App.closeAllConn()">✕ 断开全部</button>
+          </div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <table class="conn-table">
+            <thead><tr>
+              <th>目标主机</th>
+              <th>类型</th>
+              <th>链路</th>
+              <th>↓ 下载</th>
+              <th>↑ 上传</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="connBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Logs ── -->
+      <div id="page-logs" class="page">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" id="btnLogToggle" onclick="App.toggleLog()">开启日志流</button>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="App.clearLogs()">清空</button>
+        </div>
+        <div class="log-box" id="logBox">
+          <div class="log-line info">等待日志… 点击"开启日志流"连接 WebSocket 日志</div>
+        </div>
+      </div>
+
+      <!-- ── Settings ── -->
+      <div id="page-settings" class="page">
+        <div class="card">
+          <div class="card-title">▸ 运行模式</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">代理模式</div>
+              <div class="setting-desc">rule 规则分流 / global 全局代理 / direct 全局直连</div>
+            </div>
+            <div class="mode-tabs" id="settingModeTabs">
+              <button class="mode-tab" data-mode="rule">规则</button>
+              <button class="mode-tab" data-mode="global">全局</button>
+              <button class="mode-tab" data-mode="direct">直连</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">▸ 日志级别</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">日志级别</div>
+              <div class="setting-desc">silent 不记录 / info 详细 / debug 调试</div>
+            </div>
+            <div style="display:flex;gap:6px" id="logLevelTabs">
+              <button class="mode-tab" data-level="silent">静默</button>
+              <button class="mode-tab" data-level="warning">警告</button>
+              <button class="mode-tab" data-level="info">信息</button>
+              <button class="mode-tab" data-level="debug">调试</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">▸ 允许局域网</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">allow-lan</div>
+              <div class="setting-desc">允许局域网内其他设备使用代理</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="toggleAllowLan" onchange="App.setAllowLan(this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">▸ API 连接</div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">控制器地址</div>
+              <div class="setting-desc" id="apiUrlDisplay">127.0.0.1:9090</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="App.showApiConfig()">修改</button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">热重载配置</div>
+              <div class="setting-desc">重新加载 config.yaml，连接不中断</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="App.reload()">⟳ 重载</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /page-content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- API Config Modal -->
+<div class="modal-overlay" id="modalApiConfig" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title">API 连接设置</div>
+    <div class="form-group">
+      <label class="form-label">控制器地址（host:port）</label>
+      <input class="form-input" id="inputApiHost" value="127.0.0.1:9090" placeholder="127.0.0.1:9090">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Secret（留空则不验证）</label>
+      <input class="form-input" id="inputApiSecret" type="password" placeholder="（可选）">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="document.getElementById('modalApiConfig').style.display='none'">取消</button>
+      <button class="btn btn-primary" onclick="App.saveApiConfig()">连接</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Config ───────────────────────────────────────────────────────
+const CFG = {
+  host:   localStorage.getItem('mihomo_host')   || '127.0.0.1:9090',
+  secret: localStorage.getItem('mihomo_secret') || '',
+};
+
+// ─── API ──────────────────────────────────────────────────────────
+const API = {
+  base() { return `http://${CFG.host}`; },
+  headers() {
+    const h = { 'Content-Type': 'application/json' };
+    if (CFG.secret) h['Authorization'] = `Bearer ${CFG.secret}`;
+    return h;
+  },
+  async get(path) {
+    const r = await fetch(this.base() + path, { headers: this.headers() });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  },
+  async patch(path, body) {
+    const r = await fetch(this.base() + path, {
+      method: 'PATCH', headers: this.headers(), body: JSON.stringify(body),
+    });
+    return r.status;
+  },
+  async put(path, body) {
+    const r = await fetch(this.base() + path, {
+      method: 'PUT', headers: this.headers(), body: JSON.stringify(body),
+    });
+    return r.status;
+  },
+  async del(path) {
+    const r = await fetch(this.base() + path, { method: 'DELETE', headers: this.headers() });
+    return r.status;
+  },
+};
+
+// ─── Utils ────────────────────────────────────────────────────────
+function fmtSpeed(b) {
+  if (b >= 1e9) return (b/1e9).toFixed(2) + ' GB/s';
+  if (b >= 1e6) return (b/1e6).toFixed(1) + ' MB/s';
+  if (b >= 1e3) return (b/1e3).toFixed(0) + ' KB/s';
+  return b + ' B/s';
+}
+function fmtBytes(b) {
+  if (b >= 1e9) return (b/1e9).toFixed(2) + ' GB';
+  if (b >= 1e6) return (b/1e6).toFixed(1) + ' MB';
+  if (b >= 1e3) return (b/1e3).toFixed(0) + ' KB';
+  return b + ' B';
+}
+function fmtDelay(d) {
+  if (!d || d === 0) return { text: '—', cls: 'none' };
+  if (d < 150) return { text: d + 'ms', cls: 'low' };
+  if (d < 400) return { text: d + 'ms', cls: 'mid' };
+  return { text: d + 'ms', cls: 'high' };
+}
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${type==='success'?'✓':type==='error'?'✗':'ℹ'}</span><span>${msg}</span>`;
+  document.getElementById('toastContainer').appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ─── Traffic Chart ────────────────────────────────────────────────
+class TrafficChart {
+  constructor(canvasId, maxPoints = 60) {
+    this.canvas = document.getElementById(canvasId);
+    this.ctx = this.canvas.getContext('2d');
+    this.maxPoints = maxPoints;
+    this.downData = new Array(maxPoints).fill(0);
+    this.upData   = new Array(maxPoints).fill(0);
+    this._raf = null;
+    this._resize();
+    window.addEventListener('resize', () => this._resize());
+  }
+  _resize() {
+    const rect = this.canvas.parentElement.getBoundingClientRect();
+    this.canvas.width  = rect.width * devicePixelRatio || 600;
+    this.canvas.height = rect.height * devicePixelRatio || 200;
+    this.canvas.style.width  = '100%';
+    this.canvas.style.height = '100%';
+    this.draw();
+  }
+  push(down, up) {
+    this.downData.push(down); this.downData.shift();
+    this.upData.push(up);     this.upData.shift();
+    this.draw();
+  }
+  draw() {
+    const { ctx, canvas, downData, upData } = this;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const max = Math.max(...downData, ...upData, 1024);
+    const drawLine = (data, color) => {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 * devicePixelRatio;
+      ctx.lineJoin = 'round';
+      data.forEach((v, i) => {
+        const x = (i / (data.length - 1)) * W;
+        const y = H - (v / max) * H * 0.9 - H * 0.05;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      // Fill
+      ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+      ctx.fillStyle = color.replace(')', ', 0.08)').replace('rgb', 'rgba');
+      ctx.fill();
+    };
+    drawLine(downData, 'rgb(6, 182, 212)');
+    drawLine(upData,   'rgb(245, 158, 11)');
+  }
+}
+
+// ─── App ──────────────────────────────────────────────────────────
+const App = {
+  currentPage: 'overview',
+  trafficChart: null,
+  bigTrafficChart: null,
+  trafficSSE: null,
+  logWS: null,
+  logStreaming: false,
+  connInterval: null,
+  currentMode: '',
+  proxiesCache: {},
+
+  init() {
+    this.trafficChart    = new TrafficChart('trafficCanvas', 60);
+    this.bigTrafficChart = new TrafficChart('bigTrafficCanvas', 120);
+
+    // Nav
+    document.querySelectorAll('.nav-item').forEach(el => {
+      el.addEventListener('click', () => this.navigate(el.dataset.page));
+    });
+
+    // Mode tabs (topbar + settings)
+    document.querySelectorAll('#modeTabs .mode-tab, #settingModeTabs .mode-tab').forEach(btn => {
+      btn.addEventListener('click', () => this.setMode(btn.dataset.mode));
+    });
+
+    // Log level tabs
+    document.querySelectorAll('#logLevelTabs .mode-tab').forEach(btn => {
+      btn.addEventListener('click', () => this.setLogLevel(btn.dataset.level));
+    });
+
+    document.getElementById('btnSettings').addEventListener('click', () => this.showApiConfig());
+
+    this.loadAll();
+    this.startTraffic();
+    setInterval(() => this.loadStatus(), 5000);
+  },
+
+  navigate(page) {
+    this.currentPage = page;
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + page).classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => {
+      n.classList.toggle('active', n.dataset.page === page);
+    });
+    const titles = { overview:'状态总览', proxies:'节点管理', traffic:'实时流量', connections:'活跃连接', logs:'日志', settings:'设置' };
+    document.getElementById('pageTitle').textContent = titles[page] || page;
+
+    if (page === 'proxies')     this.loadProxies();
+    if (page === 'connections') { this.loadConnections(); if (this.connInterval) clearInterval(this.connInterval); this.connInterval = setInterval(() => this.loadConnections(), 3000); }
+    else { clearInterval(this.connInterval); this.connInterval = null; }
+    if (page === 'settings')    this.loadSettings();
+    if (page !== 'logs' && this.logStreaming) this.stopLog();
+  },
+
+  async loadAll() {
+    await this.loadStatus();
+    this.loadProxiesCache();
+  },
+
+  async loadStatus() {
+    try {
+      const [ver, cfg, conns] = await Promise.all([
+        API.get('/version'),
+        API.get('/configs'),
+        API.get('/connections').catch(() => ({})),
+      ]);
+      document.querySelector('.version').textContent = ver.version || '?';
+      document.getElementById('apiIndicator').textContent = '● 已连接';
+      document.getElementById('apiIndicator').style.color = 'var(--green)';
+
+      // Stat cards
+      document.getElementById('statStatus').innerHTML = '<span style="color:var(--green)">● 运行中</span>';
+      document.getElementById('statVersion').textContent = ver.version || '';
+      const connList = conns.connections || [];
+      document.getElementById('statConns').textContent = connList.length;
+      document.getElementById('statDownTotal').textContent = '↓ ' + fmtBytes(conns.downloadTotal || 0);
+      document.getElementById('statUpTotal').textContent   = '↑ ' + fmtBytes(conns.uploadTotal   || 0);
+      document.getElementById('tStatDownTotal').textContent = fmtBytes(conns.downloadTotal || 0);
+      document.getElementById('tStatUpTotal').textContent   = fmtBytes(conns.uploadTotal   || 0);
+
+      // Mode
+      this.currentMode = cfg.mode || 'rule';
+      document.getElementById('statMode').textContent = '模式: ' + cfg.mode;
+      this.updateModeTabs(cfg.mode);
+
+      // Allow LAN
+      const cb = document.getElementById('toggleAllowLan');
+      if (cb) cb.checked = !!cfg['allow-lan'];
+
+      // Log level
+      document.querySelectorAll('#logLevelTabs .mode-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.level === cfg['log-level']);
+      });
+
+      // Outlet info
+      this.updateOutlet();
+    } catch (e) {
+      document.getElementById('statStatus').innerHTML = '<span style="color:var(--red)">● 未连接</span>';
+      document.getElementById('apiIndicator').textContent = '● 未连接';
+      document.getElementById('apiIndicator').style.color = 'var(--red)';
+    }
+  },
+
+  async loadProxiesCache() {
+    try {
+      const data = await API.get('/proxies');
+      this.proxiesCache = data.proxies || {};
+      this.updateOutlet();
+    } catch {}
+  },
+
+  updateOutlet() {
+    const p = this.proxiesCache;
+    if (!Object.keys(p).length) return;
+    const outletEl = document.getElementById('outletInfo');
+    const groups   = Object.entries(p).filter(([,v]) => ['Selector','URLTest','Fallback'].includes(v.type));
+    outletEl.innerHTML = groups.slice(0,5).map(([name, info]) => {
+      const delay = p[info.now]?.history?.slice(-1)[0]?.delay;
+      const d     = fmtDelay(delay);
+      return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg3);border-radius:8px">
+        <div style="flex:1">
+          <div style="font-size:12px;color:var(--text2)">${name}</div>
+          <div style="font-size:13px;font-weight:500;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${info.now || '—'}</div>
+        </div>
+        <div class="node-delay ${d.cls}" style="font-size:12px">${d.text}</div>
+        <div style="font-size:10px;color:var(--text3)">${info.type}</div>
+      </div>`;
+    }).join('');
+  },
+
+  async loadProxies() {
+    const container = document.getElementById('proxyGroups');
+    try {
+      const data = await API.get('/proxies');
+      this.proxiesCache = data.proxies || {};
+      const proxies = data.proxies || {};
+      const groups  = Object.entries(proxies).filter(([,v]) => ['Selector','URLTest','Fallback'].includes(v.type) && v.name !== 'GLOBAL');
+      if (!groups.length) { container.innerHTML = '<div class="empty"><div class="icon">⬡</div>无代理分组</div>'; return; }
+      container.innerHTML = groups.map(([name, info]) => {
+        const nodes = (info.all || []).map(n => {
+          const node  = proxies[n] || {};
+          const delay = node.history?.slice(-1)[0]?.delay;
+          const special = ['DIRECT','REJECT','REJECT-DROP','COMPATIBLE'].includes(n);
+          const d = fmtDelay(delay);
+          return `<div class="node-card ${info.now===n?'active':''}" onclick="App.selectProxy('${name}','${n}')" title="${n}">
+            <div class="node-name">${n}</div>
+            <div class="node-type">${special?(n):(node.type||'?')}</div>
+            <div class="node-delay ${d.cls}">${d.text}</div>
+          </div>`;
+        }).join('');
+        return `<div class="group-item" data-group="${name}">
+          <div class="group-header" onclick="this.parentElement.classList.toggle('open')">
+            <span class="group-name">${name}</span>
+            <span class="group-type">${info.type}</span>
+            <span class="group-now">${info.now || '—'}</span>
+            <span class="group-chevron">▶</span>
+          </div>
+          <div class="nodes-grid">${nodes}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      container.innerHTML = `<div class="empty"><div class="icon">⚠</div>${e.message}</div>`;
+    }
+  },
+
+  async selectProxy(group, name) {
+    try {
+      await API.put(`/proxies/${encodeURIComponent(group)}`, { name });
+      toast(`已切换 ${group} → ${name}`, 'success');
+      this.loadProxies();
+      this.loadProxiesCache();
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  async testAll(refreshProxies = false) {
+    toast('测速进行中，约 10s…', 'info');
+    try {
+      const data = await API.get('/proxies');
+      const proxies = data.proxies || {};
+      const nodes = Object.entries(proxies).filter(([k,v]) =>
+        !['Selector','URLTest','Fallback','LoadBalance','Direct','Reject','Pass'].includes(v.type) &&
+        !['DIRECT','REJECT','GLOBAL','COMPATIBLE','REJECT-DROP'].includes(k)
+      );
+      await Promise.all(nodes.map(([name]) =>
+        API.get(`/proxies/${encodeURIComponent(name)}/delay?timeout=5000&url=https://www.gstatic.com/generate_204`).catch(() => {})
+      ));
+      toast('测速完成', 'success');
+      if (refreshProxies || this.currentPage === 'proxies') this.loadProxies();
+      this.loadProxiesCache();
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  startTraffic() {
+    if (this.trafficSSE) this.trafficSSE.close();
+    const url   = `http://${CFG.host}/traffic`;
+    const heads = CFG.secret ? { headers: { Authorization: `Bearer ${CFG.secret}` } } : {};
+    // Use fetch-based SSE reading
+    const read  = async () => {
+      try {
+        const r = await fetch(url, { headers: CFG.secret ? { Authorization: `Bearer ${CFG.secret}` } : {} });
+        const reader = r.body.getReader();
+        const dec    = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            const s = line.replace(/^data:\s*/, '').trim();
+            if (!s) continue;
+            try {
+              const { up = 0, down = 0 } = JSON.parse(s);
+              this.trafficChart.push(down, up);
+              this.bigTrafficChart.push(down, up);
+              document.getElementById('statDown').textContent   = fmtSpeed(down);
+              document.getElementById('statUp').textContent     = fmtSpeed(up);
+              document.getElementById('tLabelDown').textContent = '↓ ' + fmtSpeed(down);
+              document.getElementById('tLabelUp').textContent   = '↑ ' + fmtSpeed(up);
+              document.getElementById('tStatDown').textContent  = fmtSpeed(down);
+              document.getElementById('tStatUp').textContent    = fmtSpeed(up);
+            } catch {}
+          }
+        }
+      } catch {}
+      // Reconnect after 2s
+      setTimeout(() => read(), 2000);
+    };
+    read();
+  },
+
+  async loadConnections() {
+    try {
+      const data  = await API.get('/connections');
+      const conns = data.connections || [];
+      document.getElementById('connCount').textContent = `${conns.length} 个活跃连接`;
+      const tbody = document.getElementById('connBody');
+      if (!conns.length) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:32px">暂无活跃连接</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = conns.slice(0, 100).map(c => {
+        const meta  = c.metadata || {};
+        const host  = meta.host || meta.destinationIP || '?';
+        const chain = (c.chains || []).join(' → ');
+        return `<tr>
+          <td class="host">${host}<br><span style="color:var(--text3);font-size:10px">${meta.network||''} :${meta.destinationPort||''}</span></td>
+          <td>${meta.type || '?'}</td>
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${chain}">${chain}</td>
+          <td>${fmtBytes(c.download || 0)}</td>
+          <td>${fmtBytes(c.upload   || 0)}</td>
+          <td><button class="conn-btn-close" onclick="App.closeConn('${c.id}')">✕</button></td>
+        </tr>`;
+      }).join('');
+    } catch (e) {
+      document.getElementById('connBody').innerHTML =
+        `<tr><td colspan="6" style="text-align:center;color:var(--red);padding:24px">${e.message}</td></tr>`;
+    }
+  },
+
+  async closeConn(id) {
+    try {
+      await API.del(`/connections/${id}`);
+      this.loadConnections();
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  async closeAllConn() {
+    try {
+      await API.del('/connections');
+      toast('已断开所有连接', 'success');
+      if (this.currentPage === 'connections') this.loadConnections();
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  async setMode(mode) {
+    try {
+      await API.patch('/configs', { mode });
+      this.currentMode = mode;
+      this.updateModeTabs(mode);
+      const labels = { rule:'规则分流', global:'全局代理', direct:'全局直连' };
+      toast(`模式: ${labels[mode] || mode}`, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  updateModeTabs(mode) {
+    document.querySelectorAll('.mode-tab[data-mode]').forEach(b => {
+      b.classList.toggle('active', b.dataset.mode === mode);
+    });
+  },
+
+  async setLogLevel(level) {
+    try {
+      await API.patch('/configs', { 'log-level': level });
+      document.querySelectorAll('#logLevelTabs .mode-tab').forEach(b => b.classList.toggle('active', b.dataset.level === level));
+      toast(`日志级别: ${level}`, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  async setAllowLan(val) {
+    try {
+      await API.patch('/configs', { 'allow-lan': val });
+      toast(`allow-lan: ${val}`, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  async reload() {
+    try {
+      const status = await API.put('/configs?force=true', {});
+      if (status === 204 || status === 200) toast('配置已热重载', 'success');
+      else toast(`返回 ${status}`, 'error');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  toggleLog() {
+    if (this.logStreaming) this.stopLog(); else this.startLog();
+  },
+
+  startLog() {
+    const box = document.getElementById('logBox');
+    box.innerHTML = '';
+    const ws = new WebSocket(`ws://${CFG.host}/logs${CFG.secret ? '?token=' + CFG.secret : ''}`);
+    ws.onmessage = e => {
+      try {
+        const { type, payload } = JSON.parse(e.data);
+        const div = document.createElement('div');
+        div.className = 'log-line ' + (type === 'error' ? 'err' : type === 'warning' ? 'warn' : 'info');
+        div.textContent = `[${type}] ${payload}`;
+        box.appendChild(div);
+        if (box.children.length > 500) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+      } catch {}
+    };
+    ws.onerror = () => toast('日志连接失败', 'error');
+    ws.onclose = () => {
+      this.logStreaming = false;
+      document.getElementById('btnLogToggle').textContent = '开启日志流';
+    };
+    this.logWS = ws;
+    this.logStreaming = true;
+    document.getElementById('btnLogToggle').textContent = '关闭日志流';
+  },
+
+  stopLog() {
+    if (this.logWS) { this.logWS.close(); this.logWS = null; }
+    this.logStreaming = false;
+    document.getElementById('btnLogToggle').textContent = '开启日志流';
+  },
+
+  clearLogs() {
+    document.getElementById('logBox').innerHTML = '';
+  },
+
+  async loadSettings() {
+    await this.loadStatus();
+  },
+
+  showApiConfig() {
+    document.getElementById('inputApiHost').value   = CFG.host;
+    document.getElementById('inputApiSecret').value = CFG.secret;
+    document.getElementById('modalApiConfig').style.display = 'flex';
+  },
+
+  saveApiConfig() {
+    CFG.host   = document.getElementById('inputApiHost').value.trim() || '127.0.0.1:9090';
+    CFG.secret = document.getElementById('inputApiSecret').value.trim();
+    localStorage.setItem('mihomo_host', CFG.host);
+    localStorage.setItem('mihomo_secret', CFG.secret);
+    document.getElementById('modalApiConfig').style.display = 'none';
+    document.getElementById('apiUrlDisplay').textContent = CFG.host;
+    this.startTraffic();
+    this.loadAll();
+    toast('已保存 API 配置', 'success');
+  },
+};
+
+document.addEventListener('DOMContentLoaded', () => App.init());
+</script>
+</body>
+</html>

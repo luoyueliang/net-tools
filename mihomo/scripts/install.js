@@ -218,6 +218,38 @@ function installCtl() {
   success(`mihomo-ctl installed to ${dst}`);
 }
 
+// ── Step 7: Install Web UI ────────────────────────────────────────
+function installUi() {
+  const srcHtml = path.join(REPO_ROOT, 'ui', 'index.html');
+  if (!fs.existsSync(srcHtml)) {
+    warn('ui/index.html not found, skipping Web UI install');
+    return;
+  }
+  const uiDir = path.join(configDir, 'ui');
+  fs.mkdirSync(uiDir, { recursive: true });
+  fs.copyFileSync(srcHtml, path.join(uiDir, 'index.html'));
+
+  // Patch external-ui into config.yaml if not already set
+  const configFile = path.join(configDir, 'config.yaml');
+  if (fs.existsSync(configFile)) {
+    let cfg = fs.readFileSync(configFile, 'utf8');
+    if (!cfg.includes('external-ui:')) {
+      if (cfg.includes('external-controller:')) {
+        cfg = cfg.replace(
+          /(external-controller:[^\n]*)/,
+          `$1\nexternal-ui: ${uiDir}`
+        );
+      } else {
+        cfg += `\nexternal-ui: ${uiDir}\n`;
+      }
+      fs.writeFileSync(configFile, cfg, 'utf8');
+      info(`external-ui: ${uiDir} → written to config.yaml`);
+    }
+  }
+  success(`Web UI installed to ${uiDir}`);
+  info(`Access: http://127.0.0.1:9090/ui/  (after mihomo-ctl reload)`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 async function main() {
   console.log('\n' + c.bold('='.repeat(50)));
@@ -231,12 +263,14 @@ async function main() {
   installConfig();
   installStartup();
   installCtl();
+  installUi();
 
   console.log('\n' + c.bold('='.repeat(50)));
   success('Installation complete!');
   console.log(c.dim('\n  Quick start:'));
   console.log(c.dim('    mihomo-ctl start       Start proxy'));
   console.log(c.dim('    mihomo-ctl status      Show status'));
+  console.log(c.dim('    mihomo-ctl ui open     Open Web UI'));
   console.log(c.dim('    mihomo-ctl help        All commands'));
   console.log(c.bold('='.repeat(50)) + '\n');
 }
