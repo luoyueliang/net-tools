@@ -38,8 +38,11 @@ mihomo/
 │       │   └── mihomo.openrc         # Alpine Linux OpenRC 脚本
 │       ├── freebsd/
 │       │   └── mihomo.rc             # FreeBSD rc.d 脚本
-│       └── openwrt/
-│           └── mihomo.init           # OpenWrt init.d 脚本
+        ├── openwrt/
+        │   └── mihomo.init           # OpenWrt init.d 脚本
+        └── windows/
+            ├── install.bat           # Windows CMD 安装脚本
+            └── install.ps1           # Windows PowerShell 安装脚本
 ├── config/
 │   ├── config.yaml                   # 主配置模板
 │   └── clash-config.yaml             # ClashX Pro 订阅配置模板
@@ -50,6 +53,25 @@ mihomo/
 └── README.md
 ```
 
+## 获取源码
+
+只需下载 `mihomo/` 子目录，无需克隆整个仓库。
+
+**方式一：Git 稀疏克隆（推荐，macOS / Linux / Windows 均适用）**
+
+```bash
+git clone --filter=blob:none --sparse https://github.com/luoyueliang/net-tools.git
+cd net-tools
+git sparse-checkout set mihomo
+cd mihomo
+```
+
+**方式二：下载完整仓库 ZIP**
+
+前往 [github.com/luoyueliang/net-tools](https://github.com/luoyueliang/net-tools)，点击 **Code → Download ZIP**，解压后进入 `net-tools-main/mihomo/` 目录即可。
+
+---
+
 ## 前置要求
 
 ### 安装 Node.js
@@ -58,15 +80,23 @@ mihomo/
 
 各平台安装方式请参阅：**[../node/README.md](../node/README.md)**
 
-快速安装（macOS）：
+快速安装（macOS / Linux）：
 
 ```bash
-# Homebrew
+# macOS Homebrew
 brew install node
 
-# 或 nvm
+# 或 nvm（macOS / Linux 通用）
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 nvm install --lts
+```
+
+快速安装（Windows）：
+
+```powershell
+# 官方安装包（最简单）：https://nodejs.org → 下载 Windows LTS (.msi) 安装包，一路 Next 即可
+# 或通过 winget（Windows 10 1709+）
+winget install OpenJS.NodeJS.LTS
 ```
 
 验证：
@@ -77,8 +107,10 @@ node --version   # v16.x.x 或更高
 
 ## 安装
 
+> **Windows 用户**：请直接查看本章节的 **Windows（自动安装）** 部分，有专属安装脚本，无需关注下方 Unix 命令。
+
 ```bash
-# 进入 mihomo 目录
+# 进入 mihomo 目录（克隆方式见上方"获取源码"章节）
 cd mihomo
 
 # 执行安装脚本（Node.js 脚本，自动检测平台）
@@ -273,6 +305,7 @@ unset https_proxy http_proxy
 | 开机自启 | launchd | systemd | rc.d | OpenRC | init.d | 任务计划程序 |
 | `install.js` 自动安装 | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 
+> 系统代理（proxy-on / proxy-off）：仅 **macOS**（`networksetup`）和 **Windows**（注册表 + `netsh`）有系统级 API；Linux / FreeBSD / Alpine / OpenWrt 显示 `—`，请改用终端临时代理：`export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890`  
 > DNS 接管：macOS / FreeBSD 使用 **pf**；Linux / Alpine 使用 **iptables**；Windows 使用 **netsh**。  
 > OpenWrt 为路由器平台，DNS 接管需在 PREROUTING 链配置，与普通 Linux 桌面用法不同，暂不内置。
 
