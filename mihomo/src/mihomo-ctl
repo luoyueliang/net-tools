@@ -1722,9 +1722,9 @@ ${c.cyan('系统代理（需 sudo，macOS 专属）')}
   mihomo-ctl proxy-on         接管当前路由接口的 HTTP/HTTPS/SOCKS 代理
   mihomo-ctl proxy-off        关闭系统代理（浏览器恢复直连）
 
-${c.cyan('DNS 防污染（需 sudo，macOS · Linux · Alpine）')}
+${c.cyan('DNS 防污染（需管理员/sudo，macOS · Linux · Alpine · Windows）')}
   mihomo-ctl dns              查看 DNS 接管状态
-  mihomo-ctl dns-on           接管 DNS → Mihomo（macOS: pf+DoH · Linux/Alpine: iptables）
+  mihomo-ctl dns-on           接管 DNS → Mihomo（macOS: pf+DoH · Linux/Alpine: iptables · Windows: netsh）
   mihomo-ctl dns-off          恢复系统 DNS
 
 ${c.cyan('终端临时代理（所有平台）')}
