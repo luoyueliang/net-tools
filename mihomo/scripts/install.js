@@ -23,7 +23,7 @@ const warn    = (...a) => console.log(c.yellow('[WARN] ') + a.join(' '));
 const error   = (...a) => { console.error(c.red('[ERROR]') + ' ' + a.join(' ')); process.exit(1); };
 
 function run(cmd, opts = {}) {
-  return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }).trim();
+  return (execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }) ?? '').trim();
 }
 
 // ── Detect platform ──────────────────────────────────────────────
