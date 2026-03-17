@@ -1131,17 +1131,28 @@ async function cmdStop() {
     console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
     await cmdDnsOff({ keepAutostart: true });
   }
-  console.log('停止 Mihomo...');
+  process.stdout.write('停止 Mihomo... ');
   run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
-  run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
-  setTimeout(async () => {
-    if (!(await isRunning())) {
-      const notes = ['系统代理已关闭', dnsManaged && 'DNS 已恢复 DHCP'].filter(Boolean);
-      console.log(c.green('✓ 已停止' + (notes.length ? '，' + notes.join('，') : '')));
-    } else {
-      console.log(c.yellow('进程仍在，手动: sudo kill $(pgrep -f "mihomo -d")'));
-    }
-  }, 1000);
+  run(`pkill -TERM -f 'mihomo -d' 2>/dev/null || true`);
+
+  // 轮询最多 3s，500ms/次；过时后补发 SIGKILL
+  let stopped = false;
+  for (let i = 0; i < 6; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    if (!(await isRunning())) { stopped = true; break; }
+  }
+  if (!stopped) {
+    run(`pkill -KILL -f 'mihomo -d' 2>/dev/null || true`);
+    await new Promise(r => setTimeout(r, 500));
+    stopped = !(await isRunning());
+  }
+
+  if (stopped) {
+    const notes = ['系统代理已关闭', dnsManaged && 'DNS 已恢复 DHCP'].filter(Boolean);
+    console.log(c.green('✓ 已停止' + (notes.length ? '，' + notes.join('，') : '')));
+  } else {
+    console.log(c.yellow('进程仍在，手动: sudo kill $(pgrep -f "mihomo -d")'));
+  }
 }
 
 async function cmdRestart() {
@@ -1153,23 +1164,42 @@ async function cmdRestart() {
     console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
     await cmdDnsOff({ keepAutostart: true });
   }
-  console.log('重启 Mihomo...');
+  process.stdout.write('停止旧进程... ');
   run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
-  run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
-  setTimeout(() => {
-    const fs = require('fs');
-    if (fs.existsSync(PLIST)) run(`launchctl load "${PLIST}" 2>/dev/null || true`);
-    else exec(`/usr/local/bin/mihomo -d ${process.env.HOME}/.config/mihomo >> "${LOG}" 2>&1 &`);
-    setTimeout(async () => {
-      if (await isRunning()) {
-        console.log(c.green('✓ 已重启'));
-        await cmdProxyOn();
-        if (dnsManaged)   await cmdDnsOn();
-      } else {
-        console.log(c.red('✗ 重启失败，开启日志: mihomo-ctl log-on && mihomo-ctl restart'));
-      }
-    }, 1500);
-  }, 1000);
+  run(`pkill -TERM -f 'mihomo -d' 2>/dev/null || true`);
+
+  // 与 cmdStop 相同：轮询等待进程退出
+  let stopped = false;
+  for (let i = 0; i < 6; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    if (!(await isRunning())) { stopped = true; break; }
+  }
+  if (!stopped) {
+    run(`pkill -KILL -f 'mihomo -d' 2>/dev/null || true`);
+    await new Promise(r => setTimeout(r, 500));
+  }
+  console.log(c.dim('done'));
+
+  // 启动新进程
+  process.stdout.write('启动新进程... ');
+  const fs = require('fs');
+  if (fs.existsSync(PLIST)) run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+  else run(`nohup /usr/local/bin/mihomo -d ${process.env.HOME}/.config/mihomo >> "${LOG}" 2>&1 &`);
+
+  // 等待启动，最多 4s
+  let started = false;
+  for (let i = 0; i < 8; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    if (await isRunning()) { started = true; break; }
+  }
+
+  if (started) {
+    console.log(c.green('✓ 已重启'));
+    await cmdProxyOn();
+    if (dnsManaged) await cmdDnsOn();
+  } else {
+    console.log(c.red('✗ 重启失败，开启日志: mihomo-ctl log-on && mihomo-ctl restart'));
+  }
 }
 
 // ─── 命令：log ─────────────────────────────────────────────────
