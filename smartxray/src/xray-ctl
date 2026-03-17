@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// xray-ctl — Xray Server 管理工具
-// 用法: xray-ctl [status|start|stop|restart|user|port|config|reload|ui|help]
+// xray-ctl — Xray Server 管理工具 v2
+// 用法: xray-ctl [status|start|stop|restart|user|reality|selfservice|config|export|reload|ui|help]
 
 'use strict';
 
@@ -19,11 +19,13 @@ const XRAY_CONF  = `${DATA_DIR}/config.json`;
 const LOG_FILE   = `${DATA_DIR}/logs/xray.log`;
 const PID_FILE   = `${DATA_DIR}/xray.pid`;
 const MIHOMO_OUT = `${DATA_DIR}/mihomo-proxies.yaml`;   // 导出给 mihomo 使用
-const API_PORT   = 9091;   // xray-ctl Web UI / API
-const XRAY_API_PORT = 9092; // xray 内置 API
-const PORT_MIN   = 10000;
-const PORT_MAX   = 19999;
-const BIN        = '/usr/local/bin/xray';
+const API_PORT      = 9091;   // xray-ctl Web UI / API
+const XRAY_API_PORT = 9092;   // xray 内置 API
+const SOCKS_MIN     = 10000;
+const SOCKS_MAX     = 14999;
+const HTTP_MIN      = 15000;
+const HTTP_MAX      = 19999;
+const BIN           = '/usr/local/bin/xray';
 
 // ANSI 颜色
 const c = {
@@ -45,12 +47,21 @@ function randStr(len = 16) {
   return crypto.randomBytes(len).toString('base64url').slice(0, len);
 }
 
-function randPort() {
-  return Math.floor(Math.random() * (PORT_MAX - PORT_MIN + 1)) + PORT_MIN;
+function randHex(n = 8) {
+  return crypto.randomBytes(Math.ceil(n / 2)).toString('hex').slice(0, n);
+}
+
+function newUUID() {
+  return crypto.randomUUID ? crypto.randomUUID() : randHex(8)+'-'+randHex(4)+'-4'+randHex(3)+'-'+randHex(4)+'-'+randHex(12);
 }
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false });
 }
 
 // ─── SQLite 初始化 ───────────────────────────────────────────
@@ -66,11 +77,14 @@ function db() {
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         name       TEXT    NOT NULL UNIQUE,
         port       INTEGER NOT NULL UNIQUE,
+        http_port  INTEGER UNIQUE,
+        uuid       TEXT,
         protocol   TEXT    NOT NULL DEFAULT 'socks',
         username   TEXT    NOT NULL,
         password   TEXT    NOT NULL,
         tag        TEXT    NOT NULL UNIQUE,
         enabled    INTEGER NOT NULL DEFAULT 1,
+        expires_at TEXT    DEFAULT NULL,
         note       TEXT    DEFAULT '',
         created_at TEXT    NOT NULL DEFAULT (datetime('now'))
       );
@@ -78,7 +92,20 @@ function db() {
         key   TEXT PRIMARY KEY,
         value TEXT
       );
+      CREATE TABLE IF NOT EXISTS verifications (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        email      TEXT    NOT NULL,
+        code       TEXT    NOT NULL,
+        created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+        expires_at TEXT    NOT NULL,
+        used       INTEGER NOT NULL DEFAULT 0
+      );
     `);
+    // 旧库 schema 迁移
+    const cols = _db.prepare('PRAGMA table_info(users)').all().map(r => r.name);
+    if (!cols.includes('http_port'))  _db.exec('ALTER TABLE users ADD COLUMN http_port  INTEGER DEFAULT NULL');
+    if (!cols.includes('uuid'))       _db.exec('ALTER TABLE users ADD COLUMN uuid       TEXT    DEFAULT NULL');
+    if (!cols.includes('expires_at')) _db.exec('ALTER TABLE users ADD COLUMN expires_at TEXT    DEFAULT NULL');
     return _db;
   } catch (e) {
     console.log(c.red(`✗ SQLite 初始化失败: ${e.message}`));
@@ -114,70 +141,116 @@ function writePid(pid) {
   fs.writeFileSync(PID_FILE, String(pid));
 }
 
+// ─── 端口分配 ────────────────────────────────────────────────
+function allocPort(min, max) {
+  const used = new Set(
+    db().prepare('SELECT port FROM users').all().map(r => r.port)
+      .concat(db().prepare('SELECT http_port FROM users WHERE http_port IS NOT NULL').all().map(r => r.http_port))
+  );
+  let p, tries = 0;
+  do { p = min + Math.floor(Math.random() * (max - min + 1)); tries++; }
+  while (used.has(p) && tries < 2000);
+  if (used.has(p)) throw new Error('端口耗尽');
+  return p;
+}
+
+// ─── Reality 配置读取 ────────────────────────────────────────
+function getRealityConfig() {
+  return {
+    enabled:     getSetting('reality_enabled') === '1',
+    port:        parseInt(getSetting('reality_port', '8443')) || 8443,
+    privateKey:  getSetting('reality_private_key'),
+    publicKey:   getSetting('reality_public_key'),
+    shortIds:    getSetting('reality_short_ids', '').split(',').filter(Boolean),
+    dest:        getSetting('reality_dest', 'www.microsoft.com:443'),
+    serverNames: getSetting('reality_server_names', 'www.microsoft.com').split(',').filter(Boolean),
+  };
+}
+
 // ─── Xray 配置生成 ───────────────────────────────────────────
 function buildConfig() {
-  const users = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
+  const users    = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
   const serverIp = getSetting('server_ip', '0.0.0.0');
+  const reality  = getRealityConfig();
+  const listen   = '0.0.0.0'; // 服务端始终监听所有接口
+  const inbounds = [];
 
-  const inbounds = users.map(u => {
-    const base = {
+  // ── VLESS + XTLS-Reality 共享入站（最严格防审查配置）──────
+  // 所有用户共用同一端口，用 UUID 区分身份；Vision flow 防流量特征
+  if (reality.enabled && reality.privateKey) {
+    const vlessClients = users.filter(u => u.uuid).map(u => ({
+      id:   u.uuid,
+      flow: 'xtls-rprx-vision',   // XTLS Vision：最强流量混淆
+    }));
+    if (vlessClients.length) {
+      inbounds.push({
+        tag:      'vless-reality',
+        port:     reality.port,
+        listen,
+        protocol: 'vless',
+        settings: { clients: vlessClients, decryption: 'none' },
+        streamSettings: {
+          network:  'tcp',
+          security: 'reality',
+          realitySettings: {
+            show:        false,
+            dest:        reality.dest,         // 伪装目标（流量特征与目标站一致）
+            xver:        0,
+            serverNames: reality.serverNames,  // SNI 白名单
+            privateKey:  reality.privateKey,
+            shortIds:    reality.shortIds.length ? reality.shortIds : [''],
+          },
+        },
+        sniffing: { enabled: true, destOverride: ['http', 'tls', 'quic'], routeOnly: false },
+      });
+    }
+  }
+
+  // ── 每用户独立 SOCKS5 + HTTP 入站（账密认证）──────────────
+  for (const u of users) {
+    // SOCKS5（支持 UDP，账密认证）
+    inbounds.push({
       tag:      u.tag,
       port:     u.port,
-      listen:   serverIp === '0.0.0.0' ? '0.0.0.0' : serverIp,
-      protocol: u.protocol,
+      listen,
+      protocol: 'socks',
+      settings: { auth: 'password', accounts: [{ user: u.username, pass: u.password }], udp: true },
       sniffing: { enabled: true, destOverride: ['http', 'tls'] },
-    };
-    if (u.protocol === 'socks') {
-      base.settings = {
-        auth: 'password',
-        accounts: [{ user: u.username, pass: u.password }],
-        udp: true,
-      };
-    } else if (u.protocol === 'http') {
-      base.settings = {
-        accounts: [{ user: u.username, pass: u.password }],
-        allowTransparent: false,
-      };
+    });
+    // HTTP 代理（账密认证）
+    if (u.http_port) {
+      inbounds.push({
+        tag:      u.tag + '-http',
+        port:     u.http_port,
+        listen,
+        protocol: 'http',
+        settings: { accounts: [{ user: u.username, pass: u.password }], allowTransparent: false },
+      });
     }
-    return base;
-  });
+  }
 
-  // 内置 API inbound
+  // API inbound（本地管理用）
   inbounds.push({
-    tag:      'api',
-    port:     XRAY_API_PORT,
-    listen:   '127.0.0.1',
-    protocol: 'dokodemo-door',
-    settings: { address: '127.0.0.1' },
+    tag: 'api', port: XRAY_API_PORT, listen: '127.0.0.1',
+    protocol: 'dokodemo-door', settings: { address: '127.0.0.1' },
   });
 
   const config = {
-    log: {
-      loglevel: getSetting('log_level', 'warning'),
-      access:   LOG_FILE,
-      error:    LOG_FILE,
-    },
-    api: {
-      tag:      'api',
-      services: ['HandlerService', 'StatsService'],
-    },
-    stats: {},
-    policy: {
-      system: { statsInboundUplink: true, statsInboundDownlink: true },
-    },
+    log:    { loglevel: getSetting('log_level', 'warning'), access: LOG_FILE, error: LOG_FILE },
+    api:    { tag: 'api', services: ['HandlerService', 'StatsService'] },
+    stats:  {},
+    policy: { system: { statsInboundUplink: true, statsInboundDownlink: true } },
     routing: {
       domainStrategy: 'IPIfNonMatch',
       rules: [
         { type: 'field', inboundTag: ['api'], outboundTag: 'direct' },
         { type: 'field', ip: ['geoip:private'], outboundTag: 'direct' },
-        { type: 'field', ip: ['geoip:cn'], outboundTag: 'direct' },
-        { type: 'field', domain: ['geosite:cn'], outboundTag: 'direct' },
       ],
     },
     inbounds,
     outbounds: [
-      { tag: 'direct', protocol: 'freedom', settings: {} },
-      { tag: 'block',  protocol: 'blackhole', settings: {} },
+      { tag: 'direct', protocol: 'freedom',   settings: {} },
+      { tag: 'block',  protocol: 'blackhole',  settings: {} },
     ],
   };
 
@@ -188,24 +261,41 @@ function buildConfig() {
 
 // ─── 导出 mihomo proxies 片段 ────────────────────────────────
 function exportMihomoProxies() {
-  const users = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
+  const users   = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
+  const reality = getRealityConfig();
   if (!users.length) { fs.writeFileSync(MIHOMO_OUT, '# no proxies\n'); return; }
-  const serverIp = getSetting('server_ip', '127.0.0.1');
+  const ip    = getSetting('server_ip', '127.0.0.1');
   const lines = ['proxies:'];
   for (const u of users) {
-    if (u.protocol === 'socks') {
-      lines.push(`  - name: "${u.name}"`);
-      lines.push(`    type: socks5`);
-      lines.push(`    server: ${serverIp}`);
-      lines.push(`    port: ${u.port}`);
-      lines.push(`    username: ${u.username}`);
-      lines.push(`    password: ${u.password}`);
-      lines.push(`    udp: true`);
-    } else if (u.protocol === 'http') {
-      lines.push(`  - name: "${u.name}"`);
+    // VLESS + Reality
+    if (reality.enabled && reality.publicKey && u.uuid) {
+      lines.push(`  - name: "${u.name}-vless"`);
+      lines.push(`    type: vless`);
+      lines.push(`    server: ${ip}`);
+      lines.push(`    port: ${reality.port}`);
+      lines.push(`    uuid: ${u.uuid}`);
+      lines.push(`    flow: xtls-rprx-vision`);
+      lines.push(`    tls: true`);
+      lines.push(`    servername: ${reality.serverNames[0] || 'www.microsoft.com'}`);
+      lines.push(`    reality-opts:`);
+      lines.push(`      public-key: ${reality.publicKey}`);
+      lines.push(`      short-id: ${reality.shortIds[0] || ''}`);
+      lines.push(`    network: tcp`);
+    }
+    // SOCKS5
+    lines.push(`  - name: "${u.name}-socks5"`);
+    lines.push(`    type: socks5`);
+    lines.push(`    server: ${ip}`);
+    lines.push(`    port: ${u.port}`);
+    lines.push(`    username: ${u.username}`);
+    lines.push(`    password: ${u.password}`);
+    lines.push(`    udp: true`);
+    // HTTP
+    if (u.http_port) {
+      lines.push(`  - name: "${u.name}-http"`);
       lines.push(`    type: http`);
-      lines.push(`    server: ${serverIp}`);
-      lines.push(`    port: ${u.port}`);
+      lines.push(`    server: ${ip}`);
+      lines.push(`    port: ${u.http_port}`);
       lines.push(`    username: ${u.username}`);
       lines.push(`    password: ${u.password}`);
     }
@@ -215,79 +305,72 @@ function exportMihomoProxies() {
 }
 
 // ─── 防火墙端口管理 ──────────────────────────────────────────
-function firewallOpen(port) {
+function fwOp(action, port) {
+  if (!port) return;
   const ufw   = run('which ufw 2>/dev/null');
   const fwcmd = run('which firewall-cmd 2>/dev/null');
   const ipt   = run('which iptables 2>/dev/null');
-
   if (ufw) {
-    run(`sudo ufw allow ${port}/tcp 2>/dev/null`);
-    run(`sudo ufw allow ${port}/udp 2>/dev/null`);
-    return 'ufw';
-  }
-  if (fwcmd) {
-    run(`sudo firewall-cmd --permanent --add-port=${port}/tcp 2>/dev/null`);
-    run(`sudo firewall-cmd --permanent --add-port=${port}/udp 2>/dev/null`);
-    run('sudo firewall-cmd --reload 2>/dev/null');
-    return 'firewall-cmd';
-  }
-  if (ipt) {
-    run(`sudo iptables -I INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null`);
-    run(`sudo iptables -I INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null`);
-    return 'iptables';
-  }
-  // macOS pf anchor（仅供本地测试，服务端一般在 Linux）
-  if (process.platform === 'darwin') {
-    run(`echo "pass in proto tcp to any port ${port}" | sudo pfctl -a 'com.xray/user-${port}' -f - 2>/dev/null`);
-    run(`echo "pass in proto udp to any port ${port}" | sudo pfctl -a 'com.xray/user-${port}' -f - 2>/dev/null`);
-    return 'pf';
-  }
-  return null;
-}
-
-function firewallClose(port) {
-  const ufw   = run('which ufw 2>/dev/null');
-  const fwcmd = run('which firewall-cmd 2>/dev/null');
-  const ipt   = run('which iptables 2>/dev/null');
-
-  if (ufw) {
-    run(`sudo ufw delete allow ${port}/tcp 2>/dev/null`);
-    run(`sudo ufw delete allow ${port}/udp 2>/dev/null`);
+    if (action === 'open') {
+      run(`sudo ufw allow ${port}/tcp 2>/dev/null`);
+      run(`sudo ufw allow ${port}/udp 2>/dev/null`);
+    } else {
+      run(`sudo ufw delete allow ${port}/tcp 2>/dev/null`);
+      run(`sudo ufw delete allow ${port}/udp 2>/dev/null`);
+    }
   } else if (fwcmd) {
-    run(`sudo firewall-cmd --permanent --remove-port=${port}/tcp 2>/dev/null`);
-    run(`sudo firewall-cmd --permanent --remove-port=${port}/udp 2>/dev/null`);
+    if (action === 'open') {
+      run(`sudo firewall-cmd --permanent --add-port=${port}/tcp 2>/dev/null`);
+      run(`sudo firewall-cmd --permanent --add-port=${port}/udp 2>/dev/null`);
+    } else {
+      run(`sudo firewall-cmd --permanent --remove-port=${port}/tcp 2>/dev/null`);
+      run(`sudo firewall-cmd --permanent --remove-port=${port}/udp 2>/dev/null`);
+    }
     run('sudo firewall-cmd --reload 2>/dev/null');
   } else if (ipt) {
-    run(`sudo iptables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null`);
-    run(`sudo iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null`);
+    const flag = action === 'open' ? '-I' : '-D';
+    run(`sudo iptables ${flag} INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null`);
+    run(`sudo iptables ${flag} INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null`);
   } else if (process.platform === 'darwin') {
-    run(`sudo pfctl -a 'com.xray/user-${port}' -F nat 2>/dev/null`);
-    run(`sudo pfctl -a 'com.xray/user-${port}' -F rules 2>/dev/null`);
+    if (action === 'open') {
+      run(`printf 'pass in proto tcp to any port ${port}\npass in proto udp to any port ${port}\n' | sudo pfctl -a 'com.xray/p${port}' -f - 2>/dev/null`);
+    } else {
+      run(`sudo pfctl -a 'com.xray/p${port}' -F all 2>/dev/null`);
+    }
   }
 }
+
+function firewallOpen(port)  { fwOp('open',  port); }
+function firewallClose(port) { fwOp('close', port); }
 
 // ─── 命令：status ────────────────────────────────────────────
 function cmdStatus() {
-  const running = isRunning();
-  const pid     = readPid();
-  const ver     = running ? run(`${BIN} version 2>/dev/null | head -1`) : '';
-  const users   = db().prepare('SELECT * FROM users ORDER BY port').all();
-  const enabled = users.filter(u => u.enabled);
+  const running   = isRunning();
+  const pid       = readPid();
+  const ver       = running ? run(`${BIN} version 2>/dev/null | head -1`) : '';
+  const users     = db().prepare('SELECT * FROM users ORDER BY port').all();
+  const reality   = getRealityConfig();
+  const ssEnabled = getSetting('selfservice_enabled') === '1';
+  const now       = new Date();
 
   console.log(c.bold('\n── Xray Server 状态 ────────────────────────────'));
-  console.log(`  状态 : ${running ? c.green('● 运行中') : c.red('● 已停止')}${ver ? '  ' + c.dim(ver) : ''}`);
-  if (pid) console.log(`  PID  : ${c.dim(pid)}`);
-  console.log(`  配置 : ${XRAY_CONF}`);
-  console.log(`  数据库: ${DB_FILE}  (${users.length} 用户, ${enabled.length} 启用)`);
-  console.log(`  Web UI: ${c.cyan(`http://127.0.0.1:${API_PORT}/`)}`);
+  console.log(`  状态     : ${running ? c.green('● 运行中') : c.red('● 已停止')}${ver ? '  ' + c.dim(ver) : ''}${pid ? '  PID=' + c.dim(pid) : ''}`);
+  console.log(`  VLESS    : ${reality.enabled ? c.green(`✓ Reality 端口 ${reality.port}  SNI=${reality.serverNames[0]}`) : c.dim('未启用  (xray-ctl reality init)')}`);
+  console.log(`  自助申请 : ${ssEnabled ? c.green(`✓ 开启  有效期 ${getSetting('selfservice_hours', '2')}h`) : c.dim('关闭  (xray-ctl selfservice on)')}`);
+  console.log(`  Web UI   : ${c.cyan(`http://127.0.0.1:${API_PORT}/`)}`);
+  if (ssEnabled) console.log(`  自助页面 : ${c.cyan(`http://127.0.0.1:${API_PORT}/self`)}`);
+
   if (!users.length) {
     console.log(c.yellow('\n  尚无用户，运行: xray-ctl user add <名称>'));
   } else {
     console.log(c.bold('\n  用户列表:'));
-    console.log(c.dim('  ' + ['ID','名称','协议','端口','用户名','密码','状态'].map(s => s.padEnd(12)).join('')));
     for (const u of users) {
-      const st = u.enabled ? c.green('启用') : c.dim('禁用');
-      console.log('  ' + [u.id, u.name, u.protocol, u.port, u.username, u.password, st].map(s => String(s).padEnd(12)).join(''));
+      const st  = u.enabled ? c.green('✓') : c.dim('✗');
+      const exp = u.expires_at
+        ? (new Date(u.expires_at) > now ? c.yellow(` 到期:${fmtDate(u.expires_at)}`) : c.red(' 已过期'))
+        : '';
+      const vl  = u.uuid ? c.cyan(' VLESS✓') : '';
+      console.log(`  ${st} [${u.id}] ${c.bold(u.name.padEnd(20))} socks:${String(u.port).padEnd(6)} http:${u.http_port ? String(u.http_port).padEnd(6) : '—     '} ${u.username}/${u.password}${vl}${exp}`);
     }
   }
   console.log('');
@@ -364,92 +447,250 @@ function cmdUser(args) {
 
   if (!sub || sub === 'list') {
     const users = db().prepare('SELECT * FROM users ORDER BY port').all();
+    const now   = new Date();
     if (!users.length) { console.log(c.yellow('  尚无用户，运行: xray-ctl user add <名称>')); return; }
     console.log(c.bold('\n── 用户列表 ──────────────────────────────────'));
     for (const u of users) {
-      const st = u.enabled ? c.green('✓') : c.dim('✗');
-      console.log(`  ${st} [${u.id}] ${c.bold(u.name.padEnd(16))} ${u.protocol.padEnd(6)} :${u.port}  ${u.username}/${u.password}  ${c.dim(u.note)}`);
+      const st  = u.enabled ? c.green('✓') : c.dim('✗');
+      const vl  = u.uuid ? c.cyan(' VLESS✓') : '';
+      const exp = u.expires_at
+        ? (new Date(u.expires_at) > now ? c.yellow(` 到期:${fmtDate(u.expires_at)}`) : c.red(' 已过期'))
+        : '';
+      console.log(`  ${st} [${u.id}] ${c.bold(u.name.padEnd(18))} socks:${u.port}  http:${u.http_port || '—'}  ${u.username}/${u.password}${vl}${exp}`);
     }
     return;
   }
 
   if (sub === 'add') {
     const name     = args[1] || `user-${Date.now()}`;
-    const protocol = (args[2] || 'socks').toLowerCase();
-    const username = args[3] || randStr(8);
-    const password = args[4] || randStr(12);
-
-    // 找空闲端口
-    const usedPorts = new Set(db().prepare('SELECT port FROM users').all().map(r => r.port));
-    let port;
-    let tries = 0;
-    do { port = randPort(); tries++; } while (usedPorts.has(port) && tries < 1000);
-
-    const tag = `inbound-${name}-${port}`;
+    const username = args[2] || randStr(8);
+    const password = args[3] || randStr(12);
+    const hours    = parseInt(args[4]) || 0;
+    let socksPort, httpPort;
+    try {
+      socksPort = allocPort(SOCKS_MIN, SOCKS_MAX);
+      httpPort  = allocPort(HTTP_MIN,  HTTP_MAX);
+    } catch (e) { console.log(c.red('✗ ' + e.message)); return; }
+    const uuid      = newUUID();
+    const tag       = `u-${name}-${socksPort}`;
+    const expiresAt = hours > 0 ? new Date(Date.now() + hours * 3600000).toISOString() : null;
     try {
       db().prepare(`
-        INSERT INTO users (name, port, protocol, username, password, tag)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(name, port, protocol, username, password, tag);
-
-      const fw = firewallOpen(port);
+        INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag,expires_at)
+        VALUES (?,?,?,?,'socks',?,?,?,?)
+      `).run(name, socksPort, httpPort, uuid, username, password, tag, expiresAt);
+      firewallOpen(socksPort);
+      firewallOpen(httpPort);
       cmdReload();
-
       console.log(c.green(`✓ 用户 "${name}" 已创建`));
-      console.log(`  协议: ${protocol}  端口: ${c.cyan(port)}`);
-      console.log(`  账号: ${c.cyan(username)} / ${c.cyan(password)}`);
-      if (fw) console.log(c.dim(`  防火墙: 已开放端口 ${port} (${fw})`));
+      console.log(`  SOCKS5  | 端口: ${c.cyan(socksPort)} | ${c.cyan(username)} / ${c.cyan(password)}`);
+      console.log(`  HTTP    | 端口: ${c.cyan(httpPort)} | ${c.cyan(username)} / ${c.cyan(password)}`);
+      const reality = getRealityConfig();
+      if (reality.enabled && reality.publicKey) {
+        console.log(`  VLESS   | 端口: ${c.cyan(reality.port)} | UUID: ${c.cyan(uuid)}`);
+        console.log(`  Reality | PublicKey: ${c.dim(reality.publicKey)}`);
+        console.log(`          | ShortId: ${c.dim(reality.shortIds[0] || '')}  SNI: ${reality.serverNames[0]}`);
+      }
+      if (expiresAt) console.log(c.yellow(`  有效期  | ${fmtDate(expiresAt)} (${hours}h)`));
     } catch (e) {
-      if (e.message.includes('UNIQUE')) console.log(c.red(`✗ 用户名 "${name}" 已存在`));
-      else console.log(c.red(`✗ 添加失败: ${e.message}`));
+      if (e.message.includes('UNIQUE')) console.log(c.red(`✗ 用户 "${name}" 已存在`));
+      else console.log(c.red('✗ 添加失败: ' + e.message));
     }
     return;
   }
 
   if (sub === 'del' || sub === 'delete' || sub === 'remove') {
-    const name = args[1];
-    if (!name) { console.log(c.red('用法: xray-ctl user del <名称>')); return; }
-    const user = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(name, parseInt(name));
-    if (!user) { console.log(c.red(`✗ 用户 "${name}" 不存在`)); return; }
-    db().prepare('DELETE FROM users WHERE id=?').run(user.id);
-    firewallClose(user.port);
+    const u = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(args[1], parseInt(args[1]) || 0);
+    if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
+    db().prepare('DELETE FROM users WHERE id=?').run(u.id);
+    firewallClose(u.port);
+    firewallClose(u.http_port);
     cmdReload();
-    console.log(c.green(`✓ 用户 "${user.name}" 已删除，端口 ${user.port} 已关闭`));
+    console.log(c.green(`✓ 用户 "${u.name}" 已删除`));
     return;
   }
 
   if (sub === 'enable' || sub === 'disable') {
-    const name = args[1];
-    if (!name) { console.log(c.red(`用法: xray-ctl user ${sub} <名称>`)); return; }
-    const user = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(name, parseInt(name));
-    if (!user) { console.log(c.red(`✗ 用户 "${name}" 不存在`)); return; }
-    const enabled = sub === 'enable' ? 1 : 0;
-    db().prepare('UPDATE users SET enabled=? WHERE id=?').run(enabled, user.id);
-    if (enabled) firewallOpen(user.port); else firewallClose(user.port);
+    const u = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(args[1], parseInt(args[1]) || 0);
+    if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
+    const en = sub === 'enable' ? 1 : 0;
+    db().prepare('UPDATE users SET enabled=? WHERE id=?').run(en, u.id);
+    if (en) { firewallOpen(u.port); firewallOpen(u.http_port); }
+    else    { firewallClose(u.port); firewallClose(u.http_port); }
     cmdReload();
-    console.log(c.green(`✓ 用户 "${user.name}" 已${sub === 'enable' ? '启用' : '禁用'}`));
+    console.log(c.green(`✓ "${u.name}" 已${sub === 'enable' ? '启用' : '禁用'}`));
     return;
   }
 
   if (sub === 'passwd') {
-    const name = args[1];
-    const newPass = args[2] || randStr(12);
-    if (!name) { console.log(c.red('用法: xray-ctl user passwd <名称> [新密码]')); return; }
-    const user = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(name, parseInt(name));
-    if (!user) { console.log(c.red(`✗ 用户 "${name}" 不存在`)); return; }
-    db().prepare('UPDATE users SET password=? WHERE id=?').run(newPass, user.id);
+    const u = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(args[1], parseInt(args[1]) || 0);
+    if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
+    const np = args[2] || randStr(12);
+    db().prepare('UPDATE users SET password=? WHERE id=?').run(np, u.id);
     cmdReload();
-    console.log(c.green(`✓ 密码已更新: ${c.cyan(newPass)}`));
+    console.log(c.green(`✓ 密码已更新: ${c.cyan(np)}`));
     return;
   }
 
-  console.log(c.dim('用法: xray-ctl user [list|add|del|enable|disable|passwd] ...'));
+  console.log(c.dim('用法: xray-ctl user [list|add <名称> [用户名] [密码] [有效小时] | del | enable | disable | passwd] ...'));
+}
+
+// ─── 新命令：reality ──────────────────────────────────────
+function cmdReality(args) {
+  const sub = args[0] || 'show';
+
+  if (sub === 'init') {
+    const port    = parseInt(args[1]) || 8443;
+    const dest    = args[2] || 'www.microsoft.com:443';
+    const sni     = dest.split(':')[0];
+    const shortId = randHex(8);
+
+    // 生成 x25519 密鑰对
+    let keyOut;
+    try { keyOut = execSync(`${BIN} x25519`, { encoding: 'utf8' }); }
+    catch (e) { console.log(c.red('✗ xray x25519 失败: ' + e.message)); return; }
+    const priv = (keyOut.match(/Private key:\s*(\S+)/) || [])[1];
+    const pub  = (keyOut.match(/Public key:\s*(\S+)/)  || [])[1];
+    if (!priv || !pub) { console.log(c.red('✗ 解析密鑰失败')); return; }
+
+    setSetting('reality_enabled',      '1');
+    setSetting('reality_port',         String(port));
+    setSetting('reality_private_key',  priv);
+    setSetting('reality_public_key',   pub);
+    setSetting('reality_short_ids',    shortId);
+    setSetting('reality_dest',         dest);
+    setSetting('reality_server_names', sni);
+
+    // 为已有用户分配 UUID
+    const users = db().prepare('SELECT id, uuid FROM users WHERE uuid IS NULL OR uuid = \'\'').all();
+    for (const u of users) {
+      db().prepare('UPDATE users SET uuid=? WHERE id=?').run(newUUID(), u.id);
+    }
+    firewallOpen(port);
+    cmdReload();
+
+    console.log(c.green(`✓ Reality 已初始化 (port=${port} sni=${sni})`));
+    console.log(`  PublicKey : ${c.cyan(pub)}`);
+    console.log(`  PrivateKey: ${c.dim(priv)}`);
+    console.log(`  ShortId   : ${c.cyan(shortId)}`);
+    if (users.length) console.log(c.dim(`  建议对已有 ${users.length} 个用户运行: xray-ctl user list`));
+    return;
+  }
+
+  if (sub === 'show') {
+    const r = getRealityConfig();
+    console.log(c.bold('\n── Reality 配置 ───────────────────────────────'));
+    console.log(`  状态      : ${r.enabled ? c.green('启用') : c.red('未启用')}`);
+    console.log(`  端口      : ${r.port}`);
+    console.log(`  PublicKey : ${c.cyan(r.publicKey || '未设置')}`);
+    console.log(`  ShortIds  : ${r.shortIds.join(',') || '未设置'}`);
+    console.log(`  伪装目标  : ${r.dest}`);
+    console.log(`  SNI       : ${r.serverNames.join(',')}
+`);
+    return;
+  }
+
+  if (sub === 'disable') {
+    setSetting('reality_enabled', '0');
+    cmdReload();
+    console.log(c.green('✓ Reality 已禁用'));
+    return;
+  }
+
+  console.log(c.dim('用法: xray-ctl reality [init [port] [dest] | show | disable]'));
+}
+
+// ─── 新命令：selfservice ────────────────────────────────
+function cmdSelfservice(args) {
+  const sub = args[0];
+
+  if (!sub) {
+    const en    = getSetting('selfservice_enabled') === '1';
+    const hours = getSetting('selfservice_hours', '2');
+    const smtp  = getSetting('smtp_host') || '未设置';
+    console.log(c.bold('\n── 自助至常 ─────────────────────────────────'));
+    console.log(`  状态  : ${en ? c.green('开启') : c.red('关闭')}`);
+    console.log(`  有效期: ${hours} 小时`);
+    console.log(`  SMTP  : ${smtp}
+`);
+    console.log(c.dim('  管理:'));
+    console.log(c.dim('    xray-ctl selfservice on|off'));
+    console.log(c.dim('    xray-ctl selfservice hours <N>'));
+    console.log(c.dim('    xray-ctl selfservice smtp <host> <port> <user> <pass> [from]'));
+    return;
+  }
+
+  if (sub === 'on')  { setSetting('selfservice_enabled', '1'); console.log(c.green('✓ 自助申请已开启')); return; }
+  if (sub === 'off') { setSetting('selfservice_enabled', '0'); console.log(c.green('✓ 自助申请已关闭')); return; }
+
+  if (sub === 'hours') {
+    const h = parseInt(args[1]);
+    if (!h || h < 1) { console.log(c.red('用法: xray-ctl selfservice hours <N>')); return; }
+    setSetting('selfservice_hours', String(h));
+    console.log(c.green(`✓ 有效期设为 ${h} 小时`));
+    return;
+  }
+
+  if (sub === 'smtp') {
+    const [, host, port, user, pass, from] = args;
+    if (!host || !port || !user || !pass) {
+      console.log(c.red('用法: xray-ctl selfservice smtp <host> <port> <user> <pass> [from]'));
+      return;
+    }
+    setSetting('smtp_host',   host);
+    setSetting('smtp_port',   port);
+    setSetting('smtp_user',   user);
+    setSetting('smtp_pass',   pass);
+    setSetting('smtp_from',   from || user);
+    setSetting('smtp_secure', parseInt(port) === 465 ? '1' : '0');
+    console.log(c.green(`✓ SMTP 已设置: ${user}@${host}:${port}`));
+    return;
+  }
+
+  console.log(c.dim('用法: xray-ctl selfservice [on|off|hours <N>|smtp <host> <port> <user> <pass>]'));
+}
+
+// ─── 发送验证邮件 ───────────────────────────────────────️
+async function sendMail(to, subject, text) {
+  let nodemailer;
+  try { nodemailer = require('nodemailer'); }
+  catch { throw new Error('nodemailer 未安装: cd smartxray && npm install'); }
+  const transporter = nodemailer.createTransport({
+    host:   getSetting('smtp_host'),
+    port:   parseInt(getSetting('smtp_port', '587')),
+    secure: getSetting('smtp_secure') === '1',
+    auth:   { user: getSetting('smtp_user'), pass: getSetting('smtp_pass') },
+  });
+  await transporter.sendMail({
+    from:    getSetting('smtp_from') || getSetting('smtp_user'),
+    to,
+    subject,
+    text,
+  });
+}
+
+// ─── 过期账户时隔清理 ────────────────────────────────────
+function cleanupExpired() {
+  const now     = new Date().toISOString();
+  const expired = db().prepare('SELECT * FROM users WHERE expires_at IS NOT NULL AND expires_at < ?').all(now);
+  if (expired.length) {
+    for (const u of expired) {
+      db().prepare('DELETE FROM users WHERE id=?').run(u.id);
+      firewallClose(u.port);
+      firewallClose(u.http_port);
+    }
+    console.log(c.dim(`[cleanup] 删除 ${expired.length} 个过期账户`));
+    cmdReload();
+  }
+  // 清理过期验证码
+  db().prepare('DELETE FROM verifications WHERE expires_at < ?').run(now);
 }
 
 // ─── 命令：config ────────────────────────────────────────────
 function cmdConfig(args) {
   const key = args[0], val = args[1];
   const validKeys = ['server_ip', 'log_level'];
+
   if (!key) {
     console.log(c.bold('\n── 设置 ──────────────────────────────────────'));
     for (const k of validKeys) console.log(`  ${k.padEnd(20)} = ${getSetting(k) || c.dim('(默认)')}`);
@@ -618,7 +859,7 @@ function startApiServer() {
 // ─── help ────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
-${c.bold('xray-ctl')} — Xray Server 管理工具
+${c.bold('xray-ctl')} — Xray Server 管理工具 v2
 
 ${c.bold('进程管理')}
   xray-ctl start              启动 Xray
@@ -628,23 +869,35 @@ ${c.bold('进程管理')}
   xray-ctl reload             热重载配置 (SIGUSR1)
 
 ${c.bold('用户管理')} (自动操作防火墙 + 热重载)
-  xray-ctl user list          列出所有用户
-  xray-ctl user add <名称> [socks|http] [用户名] [密码]
-  xray-ctl user del <名称|ID>
+  xray-ctl user list
+  xray-ctl user add <名称> [用户名] [密码] [有效小时]
+  xray-ctl user del  <名称|ID>
   xray-ctl user enable  <名称|ID>
   xray-ctl user disable <名称|ID>
   xray-ctl user passwd  <名称|ID> [新密码]
 
+${c.bold('Reality (VLESS+XTLS-Reality 最严格)')}
+  xray-ctl reality init [port] [dest]   生成密钥对并启用 Reality
+  xray-ctl reality show                 查看 Reality 配置
+  xray-ctl reality disable              禁用 Reality
+
+${c.bold('自助申请 (email 验证 → 临时账户)')}
+  xray-ctl selfservice                  查看状态
+  xray-ctl selfservice on|off           开关
+  xray-ctl selfservice hours <N>        设置账户有效期(小时)
+  xray-ctl selfservice smtp <host> <port> <user> <pass> [from]
+
 ${c.bold('配置')}
-  xray-ctl config             查看设置
-  xray-ctl config server_ip <IP>    设置对外 IP（用于生成 mihomo 配置）
-  xray-ctl config log_level <级别>  debug|info|warning|error|none
+  xray-ctl config
+  xray-ctl config server_ip <IP>
+  xray-ctl config log_level debug|info|warning|error|none
 
 ${c.bold('导出')}
   xray-ctl export             导出 mihomo proxies 片段 → ${MIHOMO_OUT}
 
 ${c.bold('Web UI')}
-  xray-ctl ui                 启动 Web UI（http://127.0.0.1:${API_PORT}/）
+  xray-ctl ui                 http://127.0.0.1:${API_PORT}/
+                              自助页: http://127.0.0.1:${API_PORT}/self
 `);
 }
 
@@ -653,15 +906,17 @@ const [,, cmd, ...args] = process.argv;
 
 (async () => {
   switch (cmd) {
-    case 'start':   await cmdStart(); break;
-    case 'stop':    cmdStop(); break;
-    case 'restart': cmdStop(); await new Promise(r => setTimeout(r, 800)); await cmdStart(); break;
-    case 'status':  cmdStatus(); break;
-    case 'reload':  cmdReload(); break;
-    case 'user':    cmdUser(args); break;
-    case 'config':  cmdConfig(args); break;
-    case 'export':  cmdExport(); break;
-    case 'ui':      startApiServer(); console.log(c.green(`✓ Web UI 已启动 → http://127.0.0.1:${API_PORT}/`)); break;
+    case 'start':       await cmdStart(); break;
+    case 'stop':        cmdStop(); break;
+    case 'restart':     cmdStop(); await new Promise(r => setTimeout(r, 800)); await cmdStart(); break;
+    case 'status':      cmdStatus(); break;
+    case 'reload':      cmdReload(); break;
+    case 'user':        cmdUser(args); break;
+    case 'reality':     cmdReality(args); break;
+    case 'selfservice': cmdSelfservice(args); break;
+    case 'config':      cmdConfig(args); break;
+    case 'export':      cmdExport(); break;
+    case 'ui':          startApiServer(); console.log(c.green(`✓ Web UI 已启动 → http://127.0.0.1:${API_PORT}/`)); break;
     case 'help': case '--help': case '-h': printHelp(); break;
     default:
       if (!cmd) { cmdStatus(); }

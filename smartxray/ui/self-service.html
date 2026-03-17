@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartXray 临时账户申请</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:36px;width:100%;max-width:520px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+  h1{font-size:1.4rem;font-weight:600;color:#63b3ed;margin-bottom:6px}
+  p.sub{font-size:.85rem;color:#718096;margin-bottom:28px}
+  label{display:block;font-size:.8rem;color:#a0aec0;margin-bottom:4px}
+  input[type=text],input[type=email]{width:100%;padding:10px 14px;background:#131720;border:1px solid #2d3748;border-radius:8px;color:#e2e8f0;font-size:.95rem;outline:none;transition:border-color .2s}
+  input:focus{border-color:#63b3ed}
+  .row{margin-bottom:16px}
+  .inline{display:flex;gap:10px}
+  .inline input{flex:1}
+  button{padding:10px 22px;border:none;border-radius:8px;cursor:pointer;font-size:.9rem;font-weight:500;transition:background .2s}
+  .btn-primary{background:#3182ce;color:#fff}
+  .btn-primary:hover{background:#2b6cb0}
+  .btn-secondary{background:#2d3748;color:#e2e8f0}
+  .btn-secondary:hover{background:#4a5568}
+  .btn-sm{padding:7px 14px;font-size:.82rem}
+  .status{margin-top:14px;padding:12px 16px;border-radius:8px;font-size:.88rem;display:none}
+  .status.error{background:#2d1515;border:1px solid #742a2a;color:#fc8181;display:block}
+  .status.info{background:#1a2744;border:1px solid #2c5282;color:#90cdf4;display:block}
+  .status.success{background:#1a2f1a;border:1px solid #276749;color:#68d391;display:block}
+  /* 结果卡片 */
+  .result{display:none;margin-top:24px}
+  .result.show{display:block}
+  .result h2{font-size:1rem;color:#68d391;margin-bottom:14px}
+  .cred-group{background:#131720;border:1px solid #2d3748;border-radius:8px;padding:14px 16px;margin-bottom:12px}
+  .cred-group h3{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#718096;margin-bottom:10px}
+  .cred-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:.88rem}
+  .cred-row:last-child{margin-bottom:0}
+  .cred-key{color:#a0aec0;min-width:90px}
+  .cred-val{font-family:'SFMono-Regular',Consolas,monospace;color:#e2e8f0;word-break:break-all}
+  .copy-btn{margin-left:8px;background:#2d3748;border:none;border-radius:4px;color:#a0aec0;padding:2px 8px;font-size:.75rem;cursor:pointer}
+  .copy-btn:hover{background:#4a5568;color:#fff}
+  .expire{font-size:.8rem;color:#ed8936;margin-top:8px}
+  .share-link{word-break:break-all;font-size:.78rem;color:#63b3ed;background:#131720;border:1px solid #2d3748;border-radius:6px;padding:8px 12px;margin-top:8px}
+  #step2{display:none}
+  .step-title{font-size:.75rem;color:#718096;margin-bottom:20px}
+  .timer{font-size:.78rem;color:#ed8936;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔐 临时代理账户申请</h1>
+  <p class="sub">通过邮件验证后，获得 2 小时临时访问账户（SOCKS5 / HTTP / VLESS+Reality）</p>
+
+  <!-- Step 1: email input -->
+  <div id="step1">
+    <div class="row">
+      <label>📧 您的邮箱</label>
+      <input type="email" id="emailInput" placeholder="example@domain.com" autocomplete="email">
+    </div>
+    <button class="btn-primary" onclick="requestCode()">发送验证码</button>
+    <div id="msg1" class="status"></div>
+  </div>
+
+  <!-- Step 2: code verify -->
+  <div id="step2">
+    <p class="step-title">验证码已发送至 <span id="emailShow" style="color:#63b3ed"></span></p>
+    <div class="row">
+      <label>🔑 6 位验证码</label>
+      <div class="inline">
+        <input type="text" id="codeInput" placeholder="123456" maxlength="6" inputmode="numeric" style="letter-spacing:.3em">
+        <button class="btn-secondary btn-sm" onclick="goBack()">←</button>
+      </div>
+      <p class="timer" id="timer"></p>
+    </div>
+    <button class="btn-primary" onclick="verifyCode()">验证并获取账户</button>
+    <div id="msg2" class="status"></div>
+  </div>
+
+  <!-- Result -->
+  <div id="result" class="result">
+    <h2>✅ 账户已创建</h2>
+    <p class="expire" id="expireInfo"></p>
+
+    <div id="socksGroup" class="cred-group">
+      <h3>SOCKS5</h3>
+      <div class="cred-row"><span class="cred-key">服务器</span><span class="cred-val" id="r-socks-server"></span></div>
+      <div class="cred-row"><span class="cred-key">端口</span><span class="cred-val" id="r-socks-port"></span></div>
+      <div class="cred-row"><span class="cred-key">用户名</span><span class="cred-val" id="r-socks-user"></span><button class="copy-btn" onclick="copy('r-socks-user')">复制</button></div>
+      <div class="cred-row"><span class="cred-key">密码</span><span class="cred-val" id="r-socks-pass"></span><button class="copy-btn" onclick="copy('r-socks-pass')">复制</button></div>
+    </div>
+
+    <div id="httpGroup" class="cred-group">
+      <h3>HTTP 代理</h3>
+      <div class="cred-row"><span class="cred-key">服务器</span><span class="cred-val" id="r-http-server"></span></div>
+      <div class="cred-row"><span class="cred-key">端口</span><span class="cred-val" id="r-http-port"></span></div>
+      <div class="cred-row"><span class="cred-key">用户名</span><span class="cred-val" id="r-http-user"></span></div>
+      <div class="cred-row"><span class="cred-key">密码</span><span class="cred-val" id="r-http-pass"></span></div>
+    </div>
+
+    <div id="vlessGroup" class="cred-group" style="display:none">
+      <h3>VLESS + Reality（最强混淆，推荐）</h3>
+      <div class="cred-row"><span class="cred-key">服务器</span><span class="cred-val" id="r-vless-server"></span></div>
+      <div class="cred-row"><span class="cred-key">端口</span><span class="cred-val" id="r-vless-port"></span></div>
+      <div class="cred-row"><span class="cred-key">UUID</span><span class="cred-val" id="r-vless-uuid"></span><button class="copy-btn" onclick="copy('r-vless-uuid')">复制</button></div>
+      <div class="cred-row"><span class="cred-key">Flow</span><span class="cred-val">xtls-rprx-vision</span></div>
+      <div class="cred-row"><span class="cred-key">SNI</span><span class="cred-val" id="r-vless-sni"></span></div>
+      <div class="cred-row"><span class="cred-key">PublicKey</span><span class="cred-val" id="r-vless-pk" style="font-size:.8rem"></span><button class="copy-btn" onclick="copy('r-vless-pk')">复制</button></div>
+      <p style="font-size:.78rem;color:#718096;margin-top:8px">分享链接（可直接导入客户端）:</p>
+      <div class="share-link" id="r-vless-link"></div>
+      <button class="copy-btn" style="margin-top:6px" onclick="copyText(document.getElementById('r-vless-link').textContent)">复制链接</button>
+    </div>
+
+    <p style="font-size:.78rem;color:#718096;margin-top:16px">账户到期后将自动删除。请勿将账户分享给他人。</p>
+  </div>
+</div>
+
+<script>
+const API = '';   // 同域，不需要前缀
+
+let currentEmail = '';
+let timerHandle = null;
+
+function setMsg(id, text, type) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'status ' + type;
+}
+
+async function requestCode() {
+  const email = document.getElementById('emailInput').value.trim();
+  if (!email) { setMsg('msg1', '请输入邮箱', 'error'); return; }
+  setMsg('msg1', '正在发送…', 'info');
+  try {
+    const r = await fetch(API + '/api/self/request', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email })
+    });
+    const data = await r.json();
+    if (!r.ok) { setMsg('msg1', data.error || '发送失败', 'error'); return; }
+    currentEmail = email;
+    document.getElementById('step1').style.display = 'none';
+    document.getElementById('step2').style.display = 'block';
+    document.getElementById('emailShow').textContent = email;
+    startTimer(600);
+    setMsg('msg1', '', 'info');
+  } catch(e) { setMsg('msg1', '网络错误: ' + e.message, 'error'); }
+}
+
+function goBack() {
+  clearInterval(timerHandle);
+  document.getElementById('step2').style.display = 'none';
+  document.getElementById('step1').style.display = 'block';
+  document.getElementById('codeInput').value = '';
+  setMsg('msg2', '', 'info');
+}
+
+function startTimer(secs) {
+  clearInterval(timerHandle);
+  const el = document.getElementById('timer');
+  function tick() {
+    if (secs <= 0) { clearInterval(timerHandle); el.textContent = '验证码已过期，请重新申请'; return; }
+    const m = Math.floor(secs/60), s = secs%60;
+    el.textContent = `验证码有效期：${m}:${s.toString().padStart(2,'0')}`;
+    secs--;
+  }
+  tick();
+  timerHandle = setInterval(tick, 1000);
+}
+
+async function verifyCode() {
+  const code = document.getElementById('codeInput').value.trim();
+  if (!code) { setMsg('msg2', '请输入验证码', 'error'); return; }
+  setMsg('msg2', '验证中…', 'info');
+  try {
+    const r = await fetch(API + '/api/self/verify', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email: currentEmail, code })
+    });
+    const data = await r.json();
+    if (!r.ok) { setMsg('msg2', data.error || '验证失败', 'error'); return; }
+    clearInterval(timerHandle);
+    document.getElementById('step2').style.display = 'none';
+    showResult(data);
+  } catch(e) { setMsg('msg2', '网络错误: ' + e.message, 'error'); }
+}
+
+function showResult(d) {
+  const res = document.getElementById('result');
+  res.classList.add('show');
+
+  const exp = new Date(d.expires_at).toLocaleString('zh-CN', {hour12:false});
+  document.getElementById('expireInfo').textContent = '⏰ 账户有效至 ' + exp;
+
+  // SOCKS5
+  set('r-socks-server', d.socks5.server);
+  set('r-socks-port',   d.socks5.port);
+  set('r-socks-user',   d.socks5.username);
+  set('r-socks-pass',   d.socks5.password);
+
+  // HTTP
+  set('r-http-server', d.http.server);
+  set('r-http-port',   d.http.port);
+  set('r-http-user',   d.http.username);
+  set('r-http-pass',   d.http.password);
+
+  // VLESS
+  if (d.vless) {
+    document.getElementById('vlessGroup').style.display = 'block';
+    set('r-vless-server', d.vless.server);
+    set('r-vless-port',   d.vless.port);
+    set('r-vless-uuid',   d.vless.uuid);
+    set('r-vless-sni',    d.vless.sni);
+    set('r-vless-pk',     d.vless.publicKey);
+    document.getElementById('r-vless-link').textContent = d.vless.shareLink;
+  }
+}
+
+function set(id, val) { document.getElementById(id).textContent = val; }
+
+function copy(id) { copyText(document.getElementById(id).textContent); }
+function copyText(t) {
+  navigator.clipboard.writeText(t).catch(() => {
+    const el = document.createElement('textarea');
+    el.value = t; document.body.appendChild(el);
+    el.select(); document.execCommand('copy');
+    document.body.removeChild(el);
+  });
+}
+</script>
+</body>
+</html>
