@@ -87,6 +87,8 @@ node/           Node.js 公共目录，工具 README 的 Node.js 安装说明指
 
 - 提交信息格式：`<工具名>: <简短描述>`，例如 `mihomo: 添加 dns-on 命令`
 - 新增工具时同步更新根目录 `README.md` 的工具列表
+- **每次修改 `mihomo/src/mihomo-ctl` 都必须同步递增 patch 版本号**（`VERSION` 常量的最小位 +1）
+- **会话结束前必须将所有改动 `git add` + `git commit` + `git push`**，确保远端与本地始终一致
 
 ---
 
