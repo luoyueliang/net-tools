@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION  = '1.4.1';
+const VERSION  = '1.4.2';
 const SELF_UPDATE_URL = process.env.MIHOMO_CTL_UPDATE_URL
   || 'https://raw.githubusercontent.com/luoyueliang/net-tools/main/mihomo/src/mihomo-ctl';
 const API    = 'http://127.0.0.1:9090';
@@ -499,11 +499,103 @@ const PLATFORM_ADAPTERS = {
   },
 };
 
+// ── Linux/FreeBSD rc 文件代理管理 ─────────────────────────────
+const RC_MARKER_BEGIN  = '# >>> mihomo proxy <<<';
+const RC_MARKER_END    = '# <<< mihomo proxy >>>';
+const PROXY_ENV_URL    = 'http://127.0.0.1:7890';
+const SOCKS_ENV_URL    = 'socks5://127.0.0.1:7891';
+const NO_PROXY_LIST    = 'localhost,127.0.0.1,::1';
+
+function getShellRcFiles() {
+  const isCsh = (process.env.SHELL || '').toLowerCase().includes('csh');
+  const names = isCsh ? ['.cshrc', '.tcshrc'] : ['.bashrc', '.bash_profile', '.zshrc', '.profile'];
+  const HOME  = os.homedir();
+  const found = names.map(n => ({ path: path.join(HOME, n), isCsh })).filter(f => fs.existsSync(f.path));
+  if (!found.length) found.push({ path: path.join(HOME, isCsh ? '.cshrc' : '.bashrc'), isCsh });
+  return found;
+}
+
+function rcProxyBlock(isCsh) {
+  const lines = isCsh ? [
+    RC_MARKER_BEGIN,
+    `setenv http_proxy  ${PROXY_ENV_URL}`,
+    `setenv https_proxy ${PROXY_ENV_URL}`,
+    `setenv HTTP_PROXY  ${PROXY_ENV_URL}`,
+    `setenv HTTPS_PROXY ${PROXY_ENV_URL}`,
+    `setenv all_proxy   ${SOCKS_ENV_URL}`,
+    `setenv ALL_PROXY   ${SOCKS_ENV_URL}`,
+    `setenv no_proxy    ${NO_PROXY_LIST}`,
+    RC_MARKER_END,
+  ] : [
+    RC_MARKER_BEGIN,
+    `export http_proxy=${PROXY_ENV_URL}`,
+    `export https_proxy=${PROXY_ENV_URL}`,
+    `export HTTP_PROXY=${PROXY_ENV_URL}`,
+    `export HTTPS_PROXY=${PROXY_ENV_URL}`,
+    `export all_proxy=${SOCKS_ENV_URL}`,
+    `export ALL_PROXY=${SOCKS_ENV_URL}`,
+    `export no_proxy=${NO_PROXY_LIST}`,
+    RC_MARKER_END,
+  ];
+  return lines.join('\n');
+}
+
+function rcHasBlock(txt) { return txt.includes(RC_MARKER_BEGIN); }
+
+function rcAddBlock(txt, isCsh) {
+  return rcHasBlock(txt) ? txt : txt.trimEnd() + '\n\n' + rcProxyBlock(isCsh) + '\n';
+}
+
+function rcRemoveBlock(txt) {
+  const [bEsc, eEsc] = [RC_MARKER_BEGIN, RC_MARKER_END].map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return txt.replace(new RegExp(`\\n?${bEsc}[\\s\\S]*?${eEsc}\\n?`, 'g'), '\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+}
+
+function linuxProxyWriteRc() {
+  const backupDir = path.join(CONFIG_DIR, 'proxy-rc-backup');
+  fs.mkdirSync(backupDir, { recursive: true });
+  for (const { path: f, isCsh } of getShellRcFiles()) {
+    const existing = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+    fs.writeFileSync(path.join(backupDir, path.basename(f) + '.bak'), existing);
+    fs.writeFileSync(f, rcAddBlock(existing, isCsh));
+  }
+}
+
+function linuxProxyClearRc() {
+  for (const { path: f } of getShellRcFiles()) {
+    if (!fs.existsSync(f)) continue;
+    const txt = fs.readFileSync(f, 'utf8');
+    if (rcHasBlock(txt)) fs.writeFileSync(f, rcRemoveBlock(txt));
+  }
+}
+
+function linuxRcProxyActive() {
+  for (const { path: f } of getShellRcFiles())
+    if (fs.existsSync(f) && rcHasBlock(fs.readFileSync(f, 'utf8'))) return true;
+  return !!(process.env.https_proxy || process.env.HTTPS_PROXY);
+}
+
+// 输出可 eval 的代理语句（无 ANSI 颜色，供 eval $(mihomo-ctl proxy-env) 使用）
+function linuxProxyEvalLines(on) {
+  const isCsh = (process.env.SHELL || '').toLowerCase().includes('csh');
+  const vars  = ['http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','all_proxy','ALL_PROXY','no_proxy'];
+  if (!on) return isCsh ? vars.map(v => `unsetenv ${v}`).join('\n') : vars.map(v => `unset ${v}`).join('\n');
+  return rcProxyBlock(isCsh).split('\n').filter(l => !l.startsWith('#')).join('\n');
+}
+
 // Linux/Alpine 扩展适配器工厂：继承通用适配器，叠加 iptables DNS 接管
 function createLinuxAdapter(name, stopCmd, startCmd) {
   return {
     ...createServiceAdapter(name, stopCmd, startCmd),
-    supportsDns: true,
+    supportsDns:  true,
+    supportsProxy: true,
+    setSystemProxy(_iface)   { linuxProxyWriteRc(); },
+    clearSystemProxy(_iface) { linuxProxyClearRc(); },
+    isSystemProxyActive()    { return linuxRcProxyActive(); },
+    proxySuccessMsg(_iface) {
+      const files = getShellRcFiles().map(f => f.path.replace(os.homedir(), '~'));
+      return `✓ 代理环境变量已写入 rc 文件: ${files.join(', ')}`;
+    },
 
     // ── 网络接口检测（优先 ip route）────────────────────────────
     getActiveInterface() {
@@ -585,7 +677,15 @@ PLATFORM_ADAPTERS.openwrt = {
 function createFreeBSDAdapter(name, stopCmd, startCmd) {
   return {
     ...createServiceAdapter(name, stopCmd, startCmd),
-    supportsDns: true,
+    supportsDns:  true,
+    supportsProxy: true,
+    setSystemProxy(_iface)   { linuxProxyWriteRc(); },
+    clearSystemProxy(_iface) { linuxProxyClearRc(); },
+    isSystemProxyActive()    { return linuxRcProxyActive(); },
+    proxySuccessMsg(_iface) {
+      const files = getShellRcFiles().map(f => f.path.replace(os.homedir(), '~'));
+      return `✓ 代理环境变量已写入 rc 文件: ${files.join(', ')}`;
+    },
 
     // ── 开机自启（sysrc）─────────────────────────────────────
     isAutostartEnabled() { return run('sysrc -n mihomo_enable 2>/dev/null').trim().toUpperCase() === 'YES'; },
@@ -938,7 +1038,7 @@ async function cmdSelect(group, node) {
 
 async function cmdProxyOn() {
   if (!P.supportsProxy) {
-    console.log(c.yellow('⚠ proxy-on 仅支持 macOS / Windows'));
+    console.log(c.yellow('⚠ proxy-on 仅支持 macOS / Linux / FreeBSD / Alpine / Windows'));
     console.log(c.dim('  终端临时代理: export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890'));
     return;
   }
@@ -953,12 +1053,16 @@ async function cmdProxyOn() {
     run('git config --global https.proxy http://127.0.0.1:7890');
   }
   console.log(c.green(P.proxySuccessMsg(iface)));
+  if (['linux', 'alpine', 'freebsd'].includes(P.name)) {
+    console.log(c.dim(`  备份: ${path.join(CONFIG_DIR, 'proxy-rc-backup')}/`));
+    console.log(c.dim('  当前终端立即生效: ') + c.cyan('eval $(mihomo-ctl proxy-env)'));
+  }
   console.log(c.dim('  关闭: mihomo-ctl proxy-off'));
 }
 
 async function cmdProxyOff() {
   if (!P.supportsProxy) {
-    console.log(c.yellow('⚠ proxy-off 仅支持 macOS / Windows'));
+    console.log(c.yellow('⚠ proxy-off 仅支持 macOS / Linux / FreeBSD / Alpine / Windows'));
     return;
   }
   let iface = P.getActiveInterface(), oldGitHttpProxy = '', oldGitHttpsProxy = '';
@@ -976,7 +1080,21 @@ async function cmdProxyOff() {
     else                  run(`git config --global --unset https.proxy ${P.gitNull}`);
   }
   try { fs.unlinkSync(PROXY_BACKUP_FILE); } catch {}
-  console.log(c.green('✓ 系统代理已关闭'));
+  if (['linux', 'alpine', 'freebsd'].includes(P.name)) {
+    console.log(c.green('✓ 系统代理已关闭（rc 文件代理变量已移除）'));
+    console.log(c.dim('  当前终端立即清除: ') + c.cyan('eval $(mihomo-ctl proxy-env)'));
+  } else {
+    console.log(c.green('✓ 系统代理已关闭'));
+  }
+}
+
+// ─── 命令：proxy-env（输出可 eval 的代理语句）────────────────
+function cmdProxyEnv() {
+  if (!['linux', 'alpine', 'freebsd'].includes(P.name)) {
+    process.stderr.write('proxy-env 仅支持 Linux / Alpine / FreeBSD\n');
+    process.exit(1);
+  }
+  process.stdout.write(linuxProxyEvalLines(linuxRcProxyActive()) + '\n');
 }
 
 // ─── 命令：dns-on / dns-off ──────────────────────────────────
@@ -1815,9 +1933,13 @@ ${c.cyan('日志（默认关闭）')}
   mihomo-ctl log-off          关闭日志 (silent)
   tail -f ~/.config/mihomo/logs/mihomo.log
 
-${c.cyan('系统代理（需 sudo，macOS 专属）')}
-  mihomo-ctl proxy-on         接管当前路由接口的 HTTP/HTTPS/SOCKS 代理
-  mihomo-ctl proxy-off        关闭系统代理（浏览器恢复直连）
+${c.cyan('系统代理（macOS · Linux · FreeBSD · Alpine · Windows）')}
+  mihomo-ctl proxy-on         接管系统代理
+                              macOS/Windows: 系统级（networksetup / 注册表）
+                              Linux/FreeBSD/Alpine: 写入 ~/.bashrc ~/.zshrc 等 rc 文件（新终端自动生效）
+  mihomo-ctl proxy-off        关闭代理（Linux: 从 rc 文件移除，macOS/Win: 关闭系统代理）
+  mihomo-ctl proxy-env        输出当前状态的 eval 片段（Linux/FreeBSD/Alpine 专用）
+                              用法: eval \$(mihomo-ctl proxy-env)  — 让当前终端立即生效/清除
 
 ${c.cyan('DNS 防污染（需管理员/sudo，macOS · FreeBSD · Linux · Alpine · Windows）')}
   mihomo-ctl dns              查看 DNS 接管状态
@@ -1865,6 +1987,7 @@ const [,, cmd, ...args] = process.argv;
     case 'log-off':    await cmdLogOff();    break;
     case 'proxy-on':   await cmdProxyOn();   break;
     case 'proxy-off':  await cmdProxyOff();  break;
+    case 'proxy-env':  cmdProxyEnv();        break;
     case 'dns-on':     await cmdDnsOn();     break;
     case 'dns-off':    await cmdDnsOff();    break;
     case 'dns':        await cmdDnsStatus(); break;

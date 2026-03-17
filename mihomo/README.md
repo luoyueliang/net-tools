@@ -257,13 +257,17 @@ mihomo-ctl autostart off      禁用开机自启
 
 > 各平台服务管理器：macOS → launchd · Linux → systemd · Alpine → OpenRC · FreeBSD → rc.d · OpenWrt → init.d
 
-**系统代理（macOS 需 sudo · Windows 需管理员）**
+**系统代理（macOS · Linux · FreeBSD · Alpine · Windows）**
 
-> 其他平台请使用终端临时代理：`export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890`
+> **macOS**（需 sudo）：`networksetup` 系统级接管，浏览器等 GUI 应用自动生效。  
+> **Linux / FreeBSD / Alpine**：写入 `~/.bashrc` / `~/.zshrc` 等 rc 文件，**新终端自动生效**；运行 `eval $(mihomo-ctl proxy-env)` 可让 **当前终端立即生效**。旧内容自动备份到 `~/.config/mihomo/proxy-rc-backup/`。  
+> **Windows**（需管理员）：注册表系统代理接管。
 
 ```
-mihomo-ctl proxy-on           接管当前路由接口的 HTTP/HTTPS/SOCKS 代理
-mihomo-ctl proxy-off          关闭系统代理（浏览器恢复直连）
+mihomo-ctl proxy-on           接管系统代理（写入 rc 文件 / 系统级接管）
+mihomo-ctl proxy-off          关闭系统代理（从 rc 文件移除 / 系统级关闭）
+mihomo-ctl proxy-env          输出可 eval 的代理语句（Linux/FreeBSD/Alpine 专用）
+                              eval $(mihomo-ctl proxy-env)  — 当前终端立即生效/清除
 ```
 
 **DNS 防污染（需管理员/sudo，macOS · FreeBSD · Linux · Alpine · Windows）**
@@ -300,12 +304,12 @@ unset https_proxy http_proxy
 |------|:---:|:---:|:---:|:---:|:---:|:---:|
 | 启动 / 停止 / 重启 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 热重载 / 模式切换 / 节点管理 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| proxy-on / proxy-off（系统代理）| ✓ | — | — | — | — | ✓ |
+| proxy-on / proxy-off（系统代理）| ✓ | ✓ ² | ✓ ² | ✓ ² | — | ✓ |
 | dns-on / dns-off（DNS 接管）| ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | 开机自启 | launchd | systemd | rc.d | OpenRC | init.d | 任务计划程序 |
 | `install.js` 自动安装 | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 
-> 系统代理（proxy-on / proxy-off）：仅 **macOS**（`networksetup`）和 **Windows**（注册表 + `netsh`）有系统级 API；Linux / FreeBSD / Alpine / OpenWrt 显示 `—`，请改用终端临时代理：`export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890`  
+> 系统代理（proxy-on / proxy-off）：macOS（`networksetup`）和 Windows（注册表）为系统级接管；**² Linux / FreeBSD / Alpine** 写入 `~/.bashrc`/`~/.zshrc` 等 rc 文件（新终端自动生效），`eval $(mihomo-ctl proxy-env)` 可让当前终端立即生效；OpenWrt 为路由器平台不适用（`—`）。  
 > DNS 接管：macOS / FreeBSD 使用 **pf**；Linux / Alpine 使用 **iptables**；Windows 使用 **netsh**。  
 > OpenWrt 为路由器平台，DNS 接管需在 PREROUTING 链配置，与普通 Linux 桌面用法不同，暂不内置。
 
