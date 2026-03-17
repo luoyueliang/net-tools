@@ -69,6 +69,24 @@ function run(cmd) {
   catch { return ''; }
 }
 
+// 读取 macOS 系统代理设置，返回传给 curl 的 -x / --socks5 参数
+// 让 curl 通过 mihomo HTTP CONNECT 隧道，避免 TLS 证书 SAN 不匹配
+function getSystemProxyArg() {
+  if (process.platform !== 'darwin') return '';
+  try {
+    const sp = execSync('scutil --proxy 2>/dev/null', { encoding: 'utf8' });
+    const httpsOn   = (sp.match(/HTTPSEnable\s*:\s*(\d+)/)  || [])[1] === '1';
+    const httpsHost = (sp.match(/HTTPSProxy\s*:\s*(\S+)/)   || [])[1];
+    const httpsPort = (sp.match(/HTTPSPort\s*:\s*(\d+)/)    || [])[1];
+    if (httpsOn && httpsHost && httpsPort) return `-x "http://${httpsHost}:${httpsPort}"`;
+    const socksOn   = (sp.match(/SOCKSEnable\s*:\s*(\d+)/) || [])[1] === '1';
+    const socksHost = (sp.match(/SOCKSProxy\s*:\s*(\S+)/)  || [])[1];
+    const socksPort = (sp.match(/SOCKSPort\s*:\s*(\d+)/)   || [])[1];
+    if (socksOn && socksHost && socksPort) return `--socks5 "${socksHost}:${socksPort}"`;
+  } catch {}
+  return '';
+}
+
 async function isRunning() {
   try { await apiGet('/version'); return true; }
   catch { return false; }
@@ -137,7 +155,10 @@ async function cmdStatus() {
 
   const running = await isRunning();
   if (!running) {
-    console.log(c.red('● 未运行') + `   ${autostartStr}`);
+    const binOut = run(`"${BIN}" -v 2>/dev/null`);
+    const binVer = (binOut.match(/v[\d.]+(?:-[a-z0-9]+)?/i) || [])[0] || '';
+    const verStr = binVer ? `  ${c.dim('已安装: ' + binVer)}` : '';
+    console.log(c.red('● 未运行') + `${verStr}   ${autostartStr}`);
     const launchd = run('launchctl list | grep mihomo');
     if (launchd) console.log(c.yellow('  LaunchAgent 已加载但进程未响应 API'));
     return;
@@ -742,27 +763,9 @@ async function cmdSelfUpgrade() {
 
   const tmp = '/tmp/mihomo-ctl-new';
 
-  // 读取 macOS 系统代理（mihomo proxy-on 时已设置），显式传给 curl
-  // 不传会导致 curl 走透明代理层，TLS 证书 SAN 不匹配
-  let proxyArg = '';
-  try {
-    const sp = execSync('scutil --proxy 2>/dev/null', { encoding: 'utf8' });
-    const httpsOn   = (sp.match(/HTTPSEnable\s*:\s*(\d+)/)  || [])[1] === '1';
-    const httpsHost = (sp.match(/HTTPSProxy\s*:\s*(\S+)/)   || [])[1];
-    const httpsPort = (sp.match(/HTTPSPort\s*:\s*(\d+)/)    || [])[1];
-    if (httpsOn && httpsHost && httpsPort) {
-      proxyArg = `-x "http://${httpsHost}:${httpsPort}"`;
-    } else {
-      const socksOn   = (sp.match(/SOCKSEnable\s*:\s*(\d+)/) || [])[1] === '1';
-      const socksHost = (sp.match(/SOCKSProxy\s*:\s*(\S+)/)  || [])[1];
-      const socksPort = (sp.match(/SOCKSPort\s*:\s*(\d+)/)   || [])[1];
-      if (socksOn && socksHost && socksPort) proxyArg = `--socks5 "${socksHost}:${socksPort}"`;
-    }
-  } catch {}
-
   process.stdout.write('  下载最新版本... ');
   try {
-    execSync(`curl -fsSL --max-time 30 ${proxyArg} -o "${tmp}" "${SELF_UPDATE_URL}"`, { stdio: 'pipe' });
+    execSync(`curl -fsSL --max-time 30 ${getSystemProxyArg()} -o "${tmp}" "${SELF_UPDATE_URL}"`, { stdio: 'pipe' });
   } catch (e) {
     const is404 = e.message && e.message.includes('404');
     console.log(c.red('失败'));
@@ -872,7 +875,7 @@ async function cmdGeoUpdate() {
     const tmp = `/tmp/${name}.tmp`;
     process.stdout.write(`  下载 ${name}... `);
     try {
-      run(`curl -4 -L --max-time 60 -o "${tmp}" "${url}" 2>/dev/null`);
+      run(`curl -fsSL -4 -L --max-time 60 ${getSystemProxyArg()} -o "${tmp}" "${url}" 2>/dev/null`);
       if (!require('fs').existsSync(tmp) || require('fs').statSync(tmp).size < 100000) {
         console.log(c.red('✗ 下载失败或文件过小')); continue;
       }
