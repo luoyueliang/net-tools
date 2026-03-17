@@ -5,6 +5,10 @@
 const { execSync, exec } = require('child_process');
 const http = require('http');
 
+const VERSION  = '1.3.0';
+// mihomo-ctl 自身的 GitHub raw 地址（推送后生效，可用 MIHOMO_CTL_UPDATE_URL 环境变量覆盖）
+const SELF_UPDATE_URL = process.env.MIHOMO_CTL_UPDATE_URL
+  || 'https://raw.githubusercontent.com/arthur/net-tools/main/mihomo/src/mihomo-ctl';
 const API    = 'http://127.0.0.1:9090';
 const PLIST  = `${process.env.HOME}/Library/LaunchAgents/io.github.metacubex.mihomo.plist`;
 const PLIST_DISABLED = `${process.env.HOME}/Library/LaunchAgents/io.github.metacubex.mihomo.plist.disabled`;
@@ -348,56 +352,79 @@ function isSystemProxySetToMihomo() {
   return out.includes('HTTPProxy : 127.0.0.1') && out.includes('HTTPEnable : 1');
 }
 
-function getAllNetworkServices() {
-  // 返回所有已启用的网络服务（过滤掉屏条目）
-  return run('networksetup -listallnetworkservices 2>/dev/null')
-    .split('\n')
-    .filter(s => s && !s.startsWith('An ') && !s.includes('*'));
+// 获取当前默认路由对应的 networksetup 服务名（macOS）
+// 思路与 Clash X 相同：只接管容当前上网那条路由所在的接口，其他接口不动
+function getActiveService() {
+  if (process.platform !== 'darwin') return null;
+  // 1. 找默认路由对应的物理接口名（如 en0、en3、utun0）
+  const iface = run("route -n get default 2>/dev/null | awk '/interface:/{print $2}'").trim();
+  if (iface) {
+    // 2. 将接口名映射到 networksetup 的服务名
+    const lines = run('networksetup -listallhardwareports 2>/dev/null').split('\n');
+    let currentPort = '';
+    for (const line of lines) {
+      const pm = line.match(/^Hardware Port:\s*(.+)/);
+      if (pm) currentPort = pm[1].trim();
+      const dm = line.match(/^Device:\s*(.+)/);
+      if (dm && dm[1].trim() === iface && currentPort) return currentPort;
+    }
+  }
+  // 3. 回退：第一个有有效 IP 的服务
+  for (const svc of run('networksetup -listallnetworkservices').split('\n')
+    .filter(s => s && !s.startsWith('An ') && !s.includes('*'))) {
+    const info = run(`networksetup -getinfo "${svc}" 2>/dev/null`);
+    const m = info.match(/^IP address:\s*(.+)$/m);
+    if (m && m[1].trim() !== '(null)' && m[1].trim() !== '') return svc;
+  }
+  return 'Wi-Fi';
 }
 
 async function cmdProxyOn() {
+  if (process.platform !== 'darwin') {
+    console.log(c.yellow('⚠ proxy-on 仅支持 macOS'));
+    console.log(c.dim('  终端临时代理: export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890'));
+    return;
+  }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
-  const services = getAllNetworkServices();
-  // 保存旧 git proxy 以便 proxy-off 时恢复
+  const svc = getActiveService();
   const oldGitHttpProxy  = run('git config --global --get http.proxy  2>/dev/null');
   const oldGitHttpsProxy = run('git config --global --get https.proxy 2>/dev/null');
-  require('fs').writeFileSync(PROXY_BACKUP_FILE, JSON.stringify({ services, oldGitHttpProxy, oldGitHttpsProxy }));
-  let ok = 0, fail = 0;
-  for (const svc of services) {
-    try {
-      execSync(`sudo networksetup -setwebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
-      execSync(`sudo networksetup -setsecurewebproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
-      execSync(`sudo networksetup -setsocksfirewallproxy "${svc}" 127.0.0.1 7890 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
-      ok++;
-    } catch { fail++; }
+  require('fs').writeFileSync(PROXY_BACKUP_FILE, JSON.stringify({ service: svc, oldGitHttpProxy, oldGitHttpsProxy }));
+  try {
+    execSync(`sudo networksetup -setwebproxy "${svc}" 127.0.0.1 7890`, { stdio: ['inherit', 'pipe', 'pipe'] });
+    execSync(`sudo networksetup -setsecurewebproxy "${svc}" 127.0.0.1 7890`, { stdio: ['inherit', 'pipe', 'pipe'] });
+    execSync(`sudo networksetup -setsocksfirewallproxy "${svc}" 127.0.0.1 7890`, { stdio: ['inherit', 'pipe', 'pipe'] });
+  } catch (e) {
+    console.log(c.red(`✗ 设置代理失败: ${e.message}`)); return;
   }
   // git 不读 macOS 系统代理，需单独配置（否则 SNI 劫持会阻断 git push）
   if (run('which git 2>/dev/null')) {
     run('git config --global http.proxy  http://127.0.0.1:7890');
     run('git config --global https.proxy http://127.0.0.1:7890');
   }
-  console.log(c.green(`✓ 系统代理已接管 → 127.0.0.1:7890 (成功 ${ok} 个服务)` + (fail ? c.dim(` 跳过 ${fail} 个`) : '')));
+  console.log(c.green(`✓ 系统代理已接管 → 127.0.0.1:7890 (${svc})`));
   console.log(c.dim('  关闭: mihomo-ctl proxy-off'));
 }
 
 async function cmdProxyOff() {
-  let services, oldGitHttpProxy, oldGitHttpsProxy;
+  if (process.platform !== 'darwin') {
+    console.log(c.yellow('⚠ proxy-off 仅支持 macOS'));
+    return;
+  }
+  let svc = null, oldGitHttpProxy = '', oldGitHttpsProxy = '';
   try {
     const bak = JSON.parse(require('fs').readFileSync(PROXY_BACKUP_FILE, 'utf8'));
-    services         = Array.isArray(bak.services) ? bak.services : null;
+    // 兼容旧格式 { services: [...] } 和新格式 { service: '...' }
+    svc              = bak.service || (Array.isArray(bak.services) && bak.services[0]) || null;
     oldGitHttpProxy  = bak.oldGitHttpProxy  || '';
     oldGitHttpsProxy = bak.oldGitHttpsProxy || '';
   } catch {}
-  if (!services) services = getAllNetworkServices();
-  let ok = 0;
-  for (const svc of services) {
-    try {
-      execSync(`sudo networksetup -setwebproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
-      execSync(`sudo networksetup -setsecurewebproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
-      execSync(`sudo networksetup -setsocksfirewallproxystate "${svc}" off 2>/dev/null`, { stdio: ['inherit', 'pipe', 'pipe'] });
-      ok++;
-    } catch {}
-  }
+  if (!svc) svc = getActiveService();
+  try {
+    execSync(`sudo networksetup -setwebproxystate "${svc}" off`, { stdio: ['inherit', 'pipe', 'pipe'] });
+    execSync(`sudo networksetup -setsecurewebproxystate "${svc}" off`, { stdio: ['inherit', 'pipe', 'pipe'] });
+    execSync(`sudo networksetup -setsocksfirewallproxystate "${svc}" off`, { stdio: ['inherit', 'pipe', 'pipe'] });
+  } catch {}
   // 恢复 git proxy（若原本无代理则 unset）
   if (run('which git 2>/dev/null')) {
     if (oldGitHttpProxy)  run(`git config --global http.proxy  "${oldGitHttpProxy}"`);
@@ -406,7 +433,7 @@ async function cmdProxyOff() {
     else                  run('git config --global --unset https.proxy 2>/dev/null || true');
   }
   try { require('fs').unlinkSync(PROXY_BACKUP_FILE); } catch {}
-  console.log(c.green(`✓ 系统代理已关闭 (共 ${ok} 个服务)`));
+  console.log(c.green(`✓ 系统代理已关闭 (${svc})`));
 }
 
 // ─── 命令：dns-on / dns-off ──────────────────────────────────
@@ -416,40 +443,36 @@ const DNS_BACKUP_FILE = '/tmp/mihomo-dns.backup';
 const PROXY_BACKUP_FILE = '/tmp/mihomo-proxy.backup';
 const DNS_AUTOSTART_FILE = `${process.env.HOME}/.config/mihomo/.dns-autostart`;
 
-function getWifiInterface() {
-  // 找第一个活跃的 Wi-Fi 或以太网
-  const services = run('networksetup -listallnetworkservices').split('\n').filter(s => !s.startsWith('An '));
-  for (const svc of services) {
-    const dev = run(`networksetup -getinfo "${svc}" | grep "^IP address:"`);
-    if (dev) return svc;
-  }
-  return 'Wi-Fi';
-}
-
 async function cmdDnsOn() {
+  const pl = detectPlatform();
+  if (pl !== 'macos' && pl !== 'freebsd') {
+    console.log(c.yellow(`⚠ dns-on 仅支持 macOS / FreeBSD（当前平台: ${pl}）`));
+    console.log(c.dim('  Linux 可用 iptables 重定向：'));
+    console.log(c.dim('  sudo iptables -t nat -A OUTPUT -p udp ! -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports 1053'));
+    return;
+  }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
 
   // 检查 1053 是否在监听
-  const listening = run('lsof -i :1053 -sTCP:LISTEN -n -P 2>/dev/null || lsof -i UDP:1053 -n -P 2>/dev/null | grep mihomo');
+  const listening = run('lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo');
   if (!listening) {
     console.log(c.red('✗ Mihomo DNS 未在 127.0.0.1:1053 监听，请检查配置后重启'));
     console.log(c.dim('  mihomo-ctl restart'));
     return;
   }
 
-  const iface = getWifiInterface();
+  // 只接管当前默认路由所在的接口
+  const iface = getActiveService();
   console.log(c.bold(`\n── 开启 DNS 接管 (接口: ${iface}) ─────────────────`));
 
-  // 备份当前 DNS（区分 DHCP 自动 vs 固定 DNS）
-  const currentDns = run(`networksetup -getdnsservers "${iface}"`);
-  // macOS 无 DNS 时返回 "There aren't any DNS Servers set on ..."
+  // 备份当前 DNS（DHCP 自动 vs 固定）
+  const currentDns = run(`networksetup -getdnsservers "${iface}" 2>/dev/null`);
   const isDhcp = !currentDns || currentDns.includes("aren't") || currentDns.includes('127.0.0.1');
   const dnsToRestore = isDhcp ? null : currentDns.trim().split('\n').filter(Boolean);
   require('fs').writeFileSync(DNS_BACKUP_FILE, JSON.stringify({ iface, dnsToRestore }));
 
-  // 写 pf rdr 规则（lo0: 53 → 1053）
+  // pf rdr 规则（lo0: 53 → 1053）
   // 使用 com.apple/mihomo-dns 子 anchor，避免覆盖 Apple 自身的 pf 规则
-  // macOS pf anchor 内使用 "rdr on" 语法（不带 pass），rdr-to / rdr pass 均不支持
   const pfConf = [
     'rdr on lo0 proto udp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
     'rdr on lo0 proto tcp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053',
@@ -457,19 +480,14 @@ async function cmdDnsOn() {
   require('fs').writeFileSync(PF_CONF, pfConf);
 
   try {
-    // 加载进 com.apple 子 anchor（/etc/pf.conf 中有 rdr-anchor "com.apple/*"）
     execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -f "${PF_CONF}"`, { stdio: ['inherit', 'pipe', 'pipe'] });
-    // 确保 pf 已启用
     execSync('sudo pfctl -e 2>/dev/null || true', { stdio: 'pipe' });
-    // 验证规则已加载
     const loaded = run(`sudo pfctl -a 'com.apple/mihomo-dns' -sn 2>/dev/null`);
     if (!loaded.includes('1053')) throw new Error('pf anchor 规则加载后验证失败');
-    // 设置系统 DNS
     execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: ['inherit', 'pipe', 'pipe'] });
-    // networksetup 已自动通知 mDNSResponder，只需刷新应用层缓存（不需要 sudo）
     execSync('dscacheutil -flushcache 2>/dev/null || true', { stdio: 'pipe' });
     require('fs').writeFileSync(DNS_AUTOSTART_FILE, '1');
-    console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)`) );
+    console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)`));
     console.log(c.dim('  国内域名 → 阿里/腾讯 DoH (直连)'));
     console.log(c.dim('  国外域名 → 1.1.1.1 / Google DoH (走代理)'));
     console.log(c.dim(`\n  关闭: mihomo-ctl dns-off`));
@@ -482,53 +500,46 @@ async function cmdDnsOn() {
 }
 
 async function cmdDnsOff({ keepAutostart = false } = {}) {
-  let iface = getWifiInterface();
-  let dnsToRestore = null;  // null = DHCP
+  // 读取备份（兼容旧格式 { services, primaryIface } 和新格式 { iface, dnsToRestore }）
+  let iface = getActiveService();
+  let dnsToRestore = null;
   try {
     const bak = JSON.parse(require('fs').readFileSync(DNS_BACKUP_FILE, 'utf8'));
-    if (bak.iface) iface = bak.iface;
-    dnsToRestore = bak.dnsToRestore || null;
+    iface = bak.iface
+      || bak.primaryIface
+      || (Array.isArray(bak.services) ? bak.services[0]?.iface : null)
+      || iface;
+    // 旧多服务格式取主接口的备份 DNS
+    if (!bak.iface && Array.isArray(bak.services)) {
+      const main = bak.services.find(s => s.iface === iface) || bak.services[0];
+      dnsToRestore = main?.dnsToRestore || null;
+    } else {
+      dnsToRestore = bak.dnsToRestore || null;
+    }
   } catch {}
 
   console.log(c.bold(`\n── 关闭 DNS 接管 (接口: ${iface}) ────────────────`));
   try {
-    // ⚠️  顺序至关重要：必须先让系统 DNS 指向一个实际可用的服务器，
-    //    否则移除 pf anchor 后会出现"DNS=127.0.0.1 但无人监听"的真空。
-
-    // Step 1: 确定用于过渡的 DNS（优先用备份的固定 DNS，否则探测 DHCP/网关）
+    // ⚠️ 顺序至关重要：先切到可用 DNS，再移除 pf anchor
     let transitionDns = (dnsToRestore && dnsToRestore.length) ? dnsToRestore : null;
     if (!transitionDns) {
-      // 尝试从 DHCP 租约拿 DNS
-      const dhcpDns = run(`ipconfig getpacket en0 2>/dev/null | grep domain_name_server | awk '{print $3}' | head -1`).trim()
-                   || run(`ipconfig getpacket en1 2>/dev/null | grep domain_name_server | awk '{print $3}' | head -1`).trim();
-      if (dhcpDns && dhcpDns.match(/^\d+\.\d+\.\d+\.\d+/)) {
-        transitionDns = [dhcpDns.split(',')[0].trim()];
-      } else {
-        // 回退：用默认网关（通常也是 DNS）
-        const gw = run(`netstat -rn | awk '/^default/{print $2; exit}'`).trim();
-        transitionDns = (gw && gw.match(/^\d+\.\d+\.\d+\.\d+/)) ? [gw] : ['8.8.8.8'];
-      }
+      const gw = run(`netstat -rn | awk '/^default/{print $2; exit}'`).trim();
+      transitionDns = (gw && gw.match(/^\d+\.\d+\.\d+\.\d+/)) ? [gw] : ['8.8.8.8'];
     }
 
-    // Step 2: 先把 DNS 切到过渡地址（立即生效，无 DHCP 等待）
     const dnsArgs = transitionDns.map(s => `"${s}"`).join(' ');
     execSync(`sudo networksetup -setdnsservers "${iface}" ${dnsArgs}`, { stdio: 'inherit' });
-    // networksetup 会自动通知 mDNSResponder，只需刷新应用层缓存（不需要 sudo）
     execSync('dscacheutil -flushcache 2>/dev/null || true', { stdio: 'pipe' });
     await new Promise(r => setTimeout(r, 600));
 
-    // Step 3: 此时 DNS 已经可用，安全地移除 pf anchor
-    // 使用 -F nat 只清 anchor 的 rdr/nat 规则，不影响全局 pf 规则集（-F all 会清整个 pf）
     execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F nat`, { stdio: 'inherit' });
-
-    // 注意：不设回 Empty。过渡 DNS（transitionDns）本身就是 DHCP 下发的路由器 DNS，
-    // 设回 Empty 会触发 mDNSResponder 重新向 DHCP 请求，产生数秒解析真空。
 
     try { require('fs').unlinkSync(DNS_BACKUP_FILE); } catch {}
     try { require('fs').unlinkSync(PF_CONF); } catch {}
-    // 只有用户手动 dns-off 才删除自启标志；stop/restart 保留它以便下次 start 恢复
     if (!keepAutostart) { try { require('fs').unlinkSync(DNS_AUTOSTART_FILE); } catch {} }
-    const restoredDesc = (dnsToRestore && dnsToRestore.length) ? dnsToRestore.join(', ') : `${transitionDns.join(', ')} (将随 DHCP 更新)`;
+    const restoredDesc = (dnsToRestore && dnsToRestore.length)
+      ? dnsToRestore.join(', ')
+      : `${transitionDns.join(', ')} (将随 DHCP 更新)`;
     console.log(c.green(`✓ DNS 已恢复为 ${restoredDesc}`));
   } catch (e) {
     console.log(c.red(`✗ 失败: ${e.message}`));
@@ -536,23 +547,39 @@ async function cmdDnsOff({ keepAutostart = false } = {}) {
 }
 
 async function cmdDnsStatus() {
-  const sysDns = run(`scutil --dns | grep 'nameserver\\[0\\]' | head -1`);
-  const port1053 = run('lsof -i UDP:1053 -n -P 2>/dev/null | grep mihomo | head -1');
+  const pl = detectPlatform();
+  if (pl !== 'macos' && pl !== 'freebsd') {
+    console.log(c.yellow(`⚠ dns-on/off 仅支持 macOS / FreeBSD（当前平台: ${pl}）`));
+    return;
+  }
+  let iface = getActiveService();
+  try {
+    const bak = JSON.parse(require('fs').readFileSync(DNS_BACKUP_FILE, 'utf8'));
+    iface = bak.iface
+      || bak.primaryIface
+      || (Array.isArray(bak.services) ? bak.services[0]?.iface : null)
+      || iface;
+  } catch {}
+
+  const ifaceDns = run(`networksetup -getdnsservers "${iface}" 2>/dev/null`);
+  const dnsServers = ifaceDns.trim().split('\n').map(l => l.trim()).filter(l => l && !/aren't|There/i.test(l));
+  const mihomoIsDns = dnsServers.includes('127.0.0.1');
+
+  const port1053 = run('lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo | head -1');
   const anchorRules = run(`sudo pfctl -a 'com.apple/mihomo-dns' -sn 2>/dev/null`);
   const pfAnchorOk = anchorRules.includes('1053');
   console.log(c.bold('\n── DNS 状态 ──────────────────────────────────'));
-  console.log(`  系统 DNS : ${c.cyan(sysDns.replace(/.*:/,'').trim() || '?')}`);
+  console.log(`  接口       : ${c.cyan(iface)}`);
+  console.log(`  系统 DNS   : ${c.cyan(dnsServers.length ? dnsServers.join(', ') : '(DHCP 自动)')}`);
   console.log(`  Mihomo 监听 1053 : ${port1053 ? c.green('✓') : c.red('✗')}`);
-  console.log(`  pf rdr anchor : ${pfAnchorOk ? c.green('✓ 已加载') : c.red('✗ 未加载')}`);
-  const mihomoIsDns = sysDns.includes('127.0.0.1');
+  console.log(`  pf rdr anchor    : ${pfAnchorOk ? c.green('✓ 已加载') : c.red('✗ 未加载')}`);
   if (pfAnchorOk && mihomoIsDns && port1053) console.log(`  接管状态 : ${c.green('已接管（防污染 DNS 生效）')}`);
   else if (mihomoIsDns && !pfAnchorOk)       console.log(`  接管状态 : ${c.yellow('⚠ 系统 DNS=127.0.0.1 但 pf 规则未加载，运行 dns-on 修复')}`);
   else                                        console.log(`  接管状态 : ${c.dim('未接管（使用默认 DNS）')}`);
-  // 快速验证实际解析是否可用
   const canResolve = run('dig +short +time=2 cloudflare.com @127.0.0.1 -p 1053 2>/dev/null');
   console.log(`  实际解析测试 : ${canResolve ? c.green('✓ ' + canResolve.split('\n')[0]) : c.red('✗ 无响应')}`);
   if (!pfAnchorOk && mihomoIsDns) {
-    console.log(c.dim('\n  pf anchor 已丢失（常见于睡眠/唤醒或网络切换后），运行:'));
+    console.log(c.dim('\n  pf anchor 已丢失（常见于睡眠/唤醒后），运行:'));
     console.log(c.cyan('  mihomo-ctl dns-on'));
   }
 }
@@ -677,8 +704,13 @@ async function cmdUpgrade() {
     if (await isRunning()) {
       const newOut = run(`"${BIN}" -v 2>/dev/null`);
       const newVer = (newOut.match(/v[\d]+\.[\d]+\.[\d]+(?:-[a-z0-9]+)?/i) || [])[0] || latest;
-      console.log(c.green(`\n  ✓ 升级成功: ${current || '?'} → ${newVer}`));
-      console.log(c.dim('  代理停机时间: ≈ 3s（预下载完成后才停机）'));
+      console.log('done');
+      console.log(c.bold('\n── 升级结果 ──────────────────────────────────'));
+      console.log(c.green(`  ✓ 升级成功`));
+      console.log(`     ${c.yellow(current || '?')} → ${c.green(newVer)}`);
+      console.log(c.dim(`  停机时间: ≈ 3s（预下载完成后才停机）`));
+      console.log(c.dim(`  配置备份: ${backupDir}/`));
+      console.log(c.dim(`  回滚命令: sudo mv "${bkBin}" "${BIN}" && mihomo-ctl restart`));
     } else {
       console.log(c.red('\n  ✗ 启动失败，自动回滚...'));
       serviceStop();
@@ -692,13 +724,65 @@ async function cmdUpgrade() {
   } else {
     const newOut = run(`"${BIN}" -v 2>/dev/null`);
     const newVer = (newOut.match(/v[\d]+\.[\d]+\.[\d]+(?:-[a-z0-9]+)?/i) || [])[0] || latest;
-    console.log(c.green(`  ✓ 升级完成（当前未运行）: ${current || '?'} → ${newVer}`));
+    console.log(c.bold('\n── 升级结果 ──────────────────────────────────'));
+    console.log(c.green(`  ✓ 升级完成（服务未运行，下次启动生效）`));
+    console.log(`     ${c.yellow(current || '?')} → ${c.green(newVer)}`);
+    console.log(c.dim(`  配置备份: ${backupDir}/`));
+    console.log(c.dim(`  回滚命令: sudo mv "${bkBin}" "${BIN}"`));
   }
-
-  console.log(c.dim(`  旧二进制: ${bkBin}  配置备份: ${backupDir}/`));
-  console.log(c.dim('  如需回滚: sudo mv ' + bkBin + ' ' + BIN + ' && mihomo-ctl restart'));
 }
 
+
+// ─── 命令：self-upgrade ───────────────────────────────────────
+async function cmdSelfUpgrade() {
+  const fs = require('fs');
+  console.log(c.bold('\n── mihomo-ctl 自升级 ─────────────────────────'));
+  console.log(c.dim(`  当前版本: v${VERSION}`));
+  console.log(c.dim(`  来源: ${SELF_UPDATE_URL}\n`));
+
+  const tmp = '/tmp/mihomo-ctl-new';
+  process.stdout.write('  下载最新版本... ');
+  try {
+    execSync(`curl -fsSL --max-time 30 -o "${tmp}" "${SELF_UPDATE_URL}"`, { stdio: 'pipe' });
+  } catch (e) {
+    console.log(c.red(`失败\n  ${e.message}`));
+    console.log(c.dim('  请确认已推送到 GitHub，或设置 MIHOMO_CTL_UPDATE_URL 环境变量'));
+    return;
+  }
+
+  const remoteContent = fs.readFileSync(tmp, 'utf8');
+  const m = remoteContent.match(/^const VERSION\s*=\s*['"']([^'"]+)['"']/m);
+  const remoteVer = m ? m[1] : null;
+  if (!remoteVer) {
+    console.log(c.red('✗ 无法识别远端版本，中止'));
+    try { fs.unlinkSync(tmp); } catch {}
+    return;
+  }
+  console.log(`远端 ${c.green('v' + remoteVer)}`);
+
+  if (remoteVer === VERSION) {
+    console.log(c.green('  ✓ 已是最新版本'));
+    try { fs.unlinkSync(tmp); } catch {}
+    return;
+  }
+
+  const self = process.argv[1];
+  const bak  = `${self}.bak-v${VERSION}`;
+  try {
+    execSync(`sudo cp "${self}" "${bak}"`, { stdio: 'pipe' });
+    execSync(`sudo mv "${tmp}" "${self}"`, { stdio: 'pipe' });
+    execSync(`sudo chmod 755 "${self}"`, { stdio: 'pipe' });
+  } catch (e) {
+    console.log(c.red(`✗ 替换失败: ${e.message}`));
+    return;
+  }
+
+  console.log(c.bold('\n── 升级结果 ──────────────────────────────────'));
+  console.log(c.green('  ✓ mihomo-ctl 升级成功'));
+  console.log(`     ${c.yellow('v' + VERSION)} → ${c.green('v' + remoteVer)}`);
+  console.log(c.dim(`  备份: ${bak}`));
+  console.log(c.dim(`  回滚: sudo mv "${bak}" "${self}"`));
+}
 
 // ─── 命令：log-on / log-off ────────────────────────────────────
 function setLogLevel(level) {
@@ -995,8 +1079,17 @@ async function cmdStart() {
 function isDnsManagedByMihomo() {
   const fs = require('fs');
   if (!fs.existsSync(DNS_BACKUP_FILE)) return false;
-  const sysDns = run('scutil --dns 2>/dev/null | grep "nameserver\\[0\\]" | head -1');
-  return sysDns.includes('127.0.0.1');
+  try {
+    const bak = JSON.parse(fs.readFileSync(DNS_BACKUP_FILE, 'utf8'));
+    const iface = bak.iface
+      || bak.primaryIface
+      || (Array.isArray(bak.services) ? bak.services[0]?.iface : null);
+    if (!iface) return false;
+    const dns = run(`networksetup -getdnsservers "${iface}" 2>/dev/null`);
+    return dns.trim().split('\n').some(l => l.trim() === '127.0.0.1');
+  } catch {
+    return false;
+  }
 }
 
 async function cmdStop() {
@@ -1216,15 +1309,17 @@ function cmdRestore(dir) {
 // ─── 命令：help ────────────────────────────────────────────────
 function cmdHelp() {
   console.log(`
-${c.bold('mihomo-ctl')} — Mihomo 代理管理工具
+${c.bold('mihomo-ctl')} v${VERSION} — Mihomo (Clash Meta) 多平台管理工具
 
 ${c.cyan('状态 & 控制')}
   mihomo-ctl                  查看状态（含 GeoIP 新鲜度、连接数）
+  mihomo-ctl version          显示 mihomo-ctl 版本
   mihomo-ctl start            启动进程 + 自动开启系统代理
   mihomo-ctl stop             停止进程 + 自动关闭系统代理
   mihomo-ctl restart          重启进程 + 自动恢复系统代理
   mihomo-ctl reload           热重载配置文件（不中断连接）
   mihomo-ctl upgrade          无缝升级（预下载完成后再停机，自动备份+回滚）
+  mihomo-ctl self-upgrade     升级 mihomo-ctl 自身（需已推送到 GitHub）
   mihomo-ctl check            检查配置文件语法
 
 ${c.cyan('模式切换')}
@@ -1272,16 +1367,16 @@ ${c.cyan('日志（默认关闭）')}
   mihomo-ctl log-off          关闭日志 (silent)
   tail -f ~/.config/mihomo/logs/mihomo.log
 
-${c.cyan('系统代理（需 sudo，浏览器）')}
-  mihomo-ctl proxy-on         接管系统 HTTP/HTTPS/SOCKS 代理
+${c.cyan('系统代理（需 sudo，macOS 专属）')}
+  mihomo-ctl proxy-on         接管当前路由接口的 HTTP/HTTPS/SOCKS 代理
   mihomo-ctl proxy-off        关闭系统代理（浏览器恢复直连）
 
-${c.cyan('DNS 防污染（需 sudo）')}
+${c.cyan('DNS 防污染（需 sudo，macOS / FreeBSD）')}
   mihomo-ctl dns              查看 DNS 接管状态
-  mihomo-ctl dns-on           接管系统 DNS → Mihomo DoH
+  mihomo-ctl dns-on           接管当前路由接口 DNS → Mihomo DoH
   mihomo-ctl dns-off          恢复系统 DNS（DHCP）
 
-${c.cyan('终端临时代理')}
+${c.cyan('终端临时代理（所有平台）')}
   export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890
   unset https_proxy http_proxy
 
@@ -1306,7 +1401,8 @@ const [,, cmd, ...args] = process.argv;
     case 'stop':       await cmdStop();      break;
     case 'restart':    await cmdRestart();   break;
     case 'reload':     await cmdReload();    break;
-    case 'upgrade':    await cmdUpgrade();   break;
+    case 'upgrade':      await cmdUpgrade();      break;
+    case 'self-upgrade':  await cmdSelfUpgrade();  break;
     case 'check':      cmdCheck();           break;
     case 'mode':       await cmdMode(args[0]); break;
     case 'geo':        await cmdGeo(args[0]); break;
@@ -1324,6 +1420,8 @@ const [,, cmd, ...args] = process.argv;
     case 'dns-on':     await cmdDnsOn();     break;
     case 'dns-off':    await cmdDnsOff();    break;
     case 'dns':        await cmdDnsStatus(); break;
+    case 'version': case '-v': case '--version':
+      console.log(`mihomo-ctl v${VERSION}`); break;
     case 'help': case '--help': case '-h': cmdHelp(); break;
     default:
       await cmdStatus();

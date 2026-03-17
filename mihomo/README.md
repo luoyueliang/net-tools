@@ -1,23 +1,24 @@
 # mihomo-ctl
 
-macOS 下的 Mihomo (Clash Meta) 代理管理 CLI 工具，基于 Node.js 编写，无需额外依赖包。
+多平台 Mihomo (Clash Meta) 代理管理 CLI 工具，基于 Node.js 编写，无需额外依赖包。  
+支持 **macOS · Linux · FreeBSD · Alpine · OpenWrt**，单脚本跨平台运行。
 
 **Mihomo 项目**: [github.com/MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)
 
 ## 功能特性
 
-- 启动 / 停止 / 重启 / **热重载** Mihomo 进程
+- 启动 / 停止 / 重启 / **热重载** Mihomo 进程（跨平台）
 - 配置文件**语法检查**
 - 一键**模式切换**（rule / global / direct）
 - **实时流量**速率监控（SSE 流）
 - **活跃连接**查看与一键断开
 - **GeoIP / GeoSite 数据自动更新**（立即下载 + cron 定时任务）
-- 一键接管 / 恢复系统 HTTP & SOCKS 代理
-- DNS 防污染接管（pf 重定向 + DoH）
+- 系统代理接管 / 恢复（**macOS 专属**，其他平台用环境变量）
+- DNS 防污染接管（pf 重定向 + DoH，**macOS / FreeBSD 专属**）
 - 交互式节点选择（↑↓ 切换 Enter 确认）
 - 节点延迟测速
-- 一键升级 Mihomo 二进制
-- 开机自启管理（launchd）
+- **无缝升级** Mihomo 二进制（预下载完成后才停机，自动备份+失败回滚，显示版本对比）
+- 开机自启管理（各平台使用对应服务管理器）
 - 日志开关与实时查看
 
 ## 目录结构
@@ -86,11 +87,11 @@ node scripts/install.js
 
 安装脚本会完成以下操作：
 1. 检查 Node.js 版本（≥ v16）
-2. 检测当前平台（macOS / Linux / FreeBSD / OpenWrt）和架构（amd64 / arm64）
+2. 检测当前平台（macOS / Linux / FreeBSD / OpenWrt / Alpine）和架构（amd64 / arm64）
 3. 下载最新版 mihomo 二进制到 `/usr/local/bin/mihomo`
 4. 创建配置目录 `~/.config/mihomo/{data,logs}`
 5. 将 `config/config.yaml` 复制到 `~/.config/mihomo/config.yaml`（已存在则跳过）
-6. 安装对应平台的启动脚本（macOS 默认禁用 autostart）
+6. 安装对应平台的启动脚本（macOS / Linux systemd / Alpine OpenRC / FreeBSD rc.d / OpenWrt init.d，默认禁用自启）
 7. 将 `mihomo-ctl` 安装到 `/usr/local/bin/mihomo-ctl`
 
 安装完成后编辑配置文件，填入你的节点信息：
@@ -173,18 +174,26 @@ mihomo-ctl autostart on       启用开机自启
 mihomo-ctl autostart off      禁用开机自启
 ```
 
-**系统代理（需 sudo，作用于浏览器）**
+> 各平台服务管理器：macOS → launchd · Linux → systemd · Alpine → OpenRC · FreeBSD → rc.d · OpenWrt → init.d
+
+**系统代理（需 sudo，macOS 专属）**
+
+> 其他平台请使用终端临时代理：`export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890`
 
 ```
-mihomo-ctl proxy-on           接管系统 HTTP/HTTPS/SOCKS 代理
+mihomo-ctl proxy-on           接管当前路由接口的 HTTP/HTTPS/SOCKS 代理
 mihomo-ctl proxy-off          关闭系统代理（浏览器恢复直连）
 ```
 
-**DNS 防污染（需 sudo）**
+**DNS 防污染（需 sudo，macOS / FreeBSD 专属）**
+
+> 使用 `pf` 端口重定向（53→1053）+ 设置系统 DNS 为 127.0.0.1。  
+> 仅接管**当前默认路由所在的接口**（与 Clash X 行为一致），不修改其他接口。  
+> Linux 可用 `iptables -t nat -A OUTPUT -p udp ! -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports 1053` 实现类似效果。
 
 ```
-mihomo-ctl dns                查看 DNS 接管状态
-mihomo-ctl dns-on             接管系统 DNS → Mihomo DoH
+mihomo-ctl dns                查看 DNS 接管状态（显示接口名）
+mihomo-ctl dns-on             接管当前路由接口 DNS → Mihomo DoH
 mihomo-ctl dns-off            恢复系统 DNS（DHCP）
 ```
 
@@ -197,12 +206,24 @@ mihomo-ctl log-off            关闭日志 (silent)
 tail -f ~/.config/mihomo/logs/mihomo.log
 ```
 
-**终端临时代理**
+**终端临时代理（所有平台）**
 
 ```bash
 export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890
 unset https_proxy http_proxy
 ```
+
+## 平台支持
+
+| 功能 | macOS | Linux | FreeBSD | Alpine | OpenWrt |
+|------|:---:|:---:|:---:|:---:|:---:|
+| 启动 / 停止 / 重启 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 热重载 / 模式切换 / 节点管理 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| proxy-on / proxy-off（系统代理）| ✓ | — | — | — | — |
+| dns-on / dns-off（pf 重定向）| ✓ | — | ✓ | — | — |
+| 开机自启 | launchd | systemd | rc.d | OpenRC | init.d |
+
+> Linux / Alpine / OpenWrt DNS 接管可自行通过 `iptables` 实现，参见上方说明。
 
 ## 配置文件说明
 
