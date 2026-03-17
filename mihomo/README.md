@@ -85,6 +85,14 @@ cd mihomo
 node scripts/install.js
 ```
 
+> **下载代理**：脚本启动时会检测 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` 等环境变量。  
+> 若未设置，会交互询问是否配置下载代理（输入 `http://127.0.0.1:7890` 等，留空则跳过），  
+> 设置后自动测试连通性。也可在执行前手动导出：  
+> ```bash
+> export HTTPS_PROXY=http://127.0.0.1:7890
+> node scripts/install.js
+> ```
+
 安装脚本会完成以下操作：
 1. 检查 Node.js 版本（≥ v16）
 2. 检测当前平台（macOS / Linux / FreeBSD / OpenWrt / Alpine）和架构（amd64 / arm64）
@@ -113,6 +121,13 @@ powershell -ExecutionPolicy Bypass -File scripts\platform\windows\install.ps1
 :: CMD（可选）
 scripts\platform\windows\install.bat
 ```
+
+> **下载代理**：同样会检测 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。未设置时交互询问，  
+> 输入代理地址后自动测试连通性。也可提前在 PowerShell 中设置：  
+> ```powershell
+> $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+> powershell -ExecutionPolicy Bypass -File scripts\platform\windows\install.ps1
+> ```
 
 安装脚本自动完成：
 
