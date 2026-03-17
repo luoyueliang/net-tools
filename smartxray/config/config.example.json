@@ -1,0 +1,49 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "__HOME__/.config/smartxray/logs/xray.log",
+    "error":  "__HOME__/.config/smartxray/logs/xray.log"
+  },
+  "api": {
+    "tag":      "api",
+    "services": ["HandlerService", "StatsService"]
+  },
+  "stats": {},
+  "policy": {
+    "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      { "type": "field", "inboundTag": ["api"], "outboundTag": "direct" },
+      { "type": "field", "ip": ["geoip:private"],  "outboundTag": "direct" },
+      { "type": "field", "ip": ["geoip:cn"],        "outboundTag": "direct" },
+      { "type": "field", "domain": ["geosite:cn"],  "outboundTag": "direct" }
+    ]
+  },
+  "inbounds": [
+    {
+      "tag":      "example-user-socks",
+      "port":     10001,
+      "listen":   "0.0.0.0",
+      "protocol": "socks",
+      "sniffing": { "enabled": true, "destOverride": ["http","tls"] },
+      "settings": {
+        "auth":     "password",
+        "accounts": [{ "user": "__USERNAME__", "pass": "__PASSWORD__" }],
+        "udp":      true
+      }
+    },
+    {
+      "tag":      "api",
+      "port":     9092,
+      "listen":   "127.0.0.1",
+      "protocol": "dokodemo-door",
+      "settings": { "address": "127.0.0.1" }
+    }
+  ],
+  "outbounds": [
+    { "tag": "direct", "protocol": "freedom",   "settings": {} },
+    { "tag": "block",  "protocol": "blackhole",  "settings": {} }
+  ]
+}

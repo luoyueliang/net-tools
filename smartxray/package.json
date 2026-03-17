@@ -1,0 +1,15 @@
+{
+  "name": "smartxray",
+  "version": "1.0.0",
+  "description": "Xray server manager with SQLite, dynamic config, firewall & Web UI",
+  "main": "src/xray-ctl",
+  "scripts": {
+    "start": "node src/xray-ctl start"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

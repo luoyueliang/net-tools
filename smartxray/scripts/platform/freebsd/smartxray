@@ -1,0 +1,16 @@
+#!/bin/sh
+# SmartXray FreeBSD rc.d script
+# PROVIDE: smartxray
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="smartxray"
+rcvar="smartxray_enable"
+command="/usr/local/bin/xray"
+command_args="run -c /usr/local/etc/smartxray/config.json"
+smartxray_enable="${smartxray_enable-NO}"
+pidfile="/var/run/smartxray.pid"
+load_rc_config $name
+run_rc_command "$1"

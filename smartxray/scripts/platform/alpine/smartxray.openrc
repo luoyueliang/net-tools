@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# SmartXray OpenRC init script (Alpine Linux)
+
+name="smartxray"
+description="SmartXray - Xray Server Manager"
+command="/usr/local/bin/xray"
+command_args="run -c /etc/smartxray/config.json"
+command_background=true
+pidfile="/run/smartxray.pid"
+output_log="/var/log/smartxray/xray.log"
+error_log="/var/log/smartxray/xray.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    mkdir -p /var/log/smartxray /etc/smartxray
+}

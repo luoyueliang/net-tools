@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartXray Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+a{color:#63b3ed}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#1a1d27}
+::-webkit-scrollbar-thumb{background:#2d3748;border-radius:3px}
+
+/* Layout */
+.sidebar{position:fixed;top:0;left:0;width:200px;height:100vh;background:#1a1d27;border-right:1px solid #2d3748;display:flex;flex-direction:column}
+.logo{padding:20px 16px 16px;font-size:18px;font-weight:700;color:#63b3ed;border-bottom:1px solid #2d3748}
+.logo span{font-size:11px;font-weight:400;color:#718096;display:block;margin-top:2px}
+nav{flex:1;padding:8px 0;overflow-y:auto}
+nav a{display:flex;align-items:center;gap:8px;padding:10px 16px;color:#a0aec0;text-decoration:none;font-size:14px;cursor:pointer;transition:all .15s}
+nav a:hover,nav a.active{background:#2d3748;color:#fff}
+nav a .ico{width:18px;text-align:center}
+.main{margin-left:200px;padding:24px}
+.page{display:none}.page.active{display:block}
+
+/* Status bar */
+.status-bar{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
+.stat-card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;padding:16px 20px;flex:1;min-width:150px}
+.stat-card .label{font-size:12px;color:#718096;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.stat-card .value{font-size:22px;font-weight:700}
+.stat-card .value.green{color:#68d391}
+.stat-card .value.red{color:#fc8181}
+.stat-card .value.blue{color:#63b3ed}
+
+/* Table */
+.card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;overflow:hidden;margin-bottom:20px}
+.card-header{padding:14px 20px;border-bottom:1px solid #2d3748;display:flex;align-items:center;justify-content:space-between;font-weight:600}
+.card-header .actions{display:flex;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 16px;text-align:left;color:#718096;font-weight:500;border-bottom:1px solid #2d3748;background:#171923}
+td{padding:10px 16px;border-bottom:1px solid #1e2433}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#1e2433}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.badge.green{background:#1a3a2a;color:#68d391}
+.badge.red{background:#3a1a1a;color:#fc8181}
+.badge.gray{background:#2d3748;color:#a0aec0}
+.badge.blue{background:#1a2a3a;color:#63b3ed}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:6px;font-size:13px;font-weight:500;border:none;cursor:pointer;transition:all .15s}
+.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover{background:#2b6cb0}
+.btn-green{background:#276749;color:#fff}.btn-green:hover{background:#2f855a}
+.btn-red{background:#822727;color:#fff}.btn-red:hover{background:#9b2c2c}
+.btn-gray{background:#2d3748;color:#e2e8f0}.btn-gray:hover{background:#4a5568}
+.btn-sm{padding:4px 10px;font-size:12px}
+
+/* Code block */
+pre{background:#171923;border:1px solid #2d3748;border-radius:8px;padding:16px;font-size:12px;overflow-x:auto;line-height:1.6;color:#a0aec0}
+code{font-family:'SFMono-Regular',Consolas,monospace}
+
+/* Form */
+.form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:16px 20px}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-group label{font-size:12px;color:#718096}
+.form-group input,.form-group select{background:#171923;border:1px solid #2d3748;border-radius:6px;padding:8px 10px;color:#e2e8f0;font-size:13px;outline:none}
+.form-group input:focus,.form-group select:focus{border-color:#4a90d9}
+.form-footer{padding:0 20px 16px;display:flex;gap:8px}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:#1a1d27;border:1px solid #2d3748;border-radius:12px;width:460px;max-width:95vw}
+.modal-header{padding:16px 20px;border-bottom:1px solid #2d3748;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.modal-body{padding:20px}
+.modal-footer{padding:12px 20px;border-top:1px solid #2d3748;display:flex;gap:8px;justify-content:flex-end}
+
+/* Copy */
+.copy-btn{background:none;border:none;cursor:pointer;padding:2px 6px;color:#718096;border-radius:4px}
+.copy-btn:hover{background:#2d3748;color:#fff}
+
+/* Toast */
+#toast{position:fixed;bottom:24px;right:24px;background:#276749;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;z-index:200}
+#toast.show{opacity:1}
+
+.empty{padding:40px;text-align:center;color:#4a5568;font-size:14px}
+.tag-mono{font-family:monospace;font-size:12px;color:#a0aec0}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo">SmartXray<span>Xray Server Manager</span></div>
+  <nav>
+    <a class="active" data-page="overview" onclick="showPage('overview',this)"><span class="ico">◉</span>概览</a>
+    <a data-page="users" onclick="showPage('users',this)"><span class="ico">👤</span>用户管理</a>
+    <a data-page="export" onclick="showPage('export',this)"><span class="ico">⬇</span>导出配置</a>
+    <a data-page="settings" onclick="showPage('settings',this)"><span class="ico">⚙</span>设置</a>
+  </nav>
+</aside>
+
+<main class="main">
+
+<!-- ── 概览 ── -->
+<div class="page active" id="page-overview">
+  <div class="status-bar">
+    <div class="stat-card">
+      <div class="label">Xray 状态</div>
+      <div class="value" id="s-running">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">启用用户</div>
+      <div class="value blue" id="s-users">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">服务 IP</div>
+      <div class="value blue" id="s-ip" style="font-size:14px">—</div>
+    </div>
+    <div class="stat-card" style="flex:none">
+      <div class="label">操作</div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-green btn-sm" onclick="apiStart()">▶ 启动</button>
+        <button class="btn btn-red btn-sm" onclick="apiStop()">■ 停止</button>
+        <button class="btn btn-gray btn-sm" onclick="apiReload()">↺ 重载</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">用户快览
+      <button class="btn btn-primary btn-sm" onclick="showPage('users',document.querySelector('[data-page=users]'));openAddModal()">+ 添加用户</button>
+    </div>
+    <table>
+      <thead><tr><th>名称</th><th>协议</th><th>端口</th><th>账号</th><th>状态</th></tr></thead>
+      <tbody id="overview-users"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── 用户管理 ── -->
+<div class="page" id="page-users">
+  <div class="card">
+    <div class="card-header">用户管理
+      <div class="actions">
+        <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ 添加用户</button>
+        <button class="btn btn-gray btn-sm" onclick="loadUsers()">↺ 刷新</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>名称</th><th>协议</th><th>端口</th><th>用户名</th><th>密码</th><th>备注</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="users-table"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── 导出 ── -->
+<div class="page" id="page-export">
+  <div class="card">
+    <div class="card-header">导出 mihomo Proxies 配置
+      <button class="btn btn-primary btn-sm" onclick="loadExport()">↺ 刷新</button>
+    </div>
+    <div style="padding:16px 20px">
+      <p style="font-size:13px;color:#a0aec0;margin-bottom:12px">
+        将以下内容追加到 mihomo 的 <code style="background:#171923;padding:2px 6px;border-radius:4px">config.yaml</code> 中，即可将 Xray 管理的 SOCKS5/HTTP 代理注册为 mihomo 出站节点。
+      </p>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <button class="btn btn-gray btn-sm" onclick="copyExport()">复制</button>
+      </div>
+      <pre><code id="export-yaml">加载中…</code></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ── 设置 ── -->
+<div class="page" id="page-settings">
+  <div class="card">
+    <div class="card-header">服务器设置</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>server_ip（对外 IP，用于 mihomo 配置）</label>
+        <input id="cfg-server_ip" placeholder="如：1.2.3.4 或 0.0.0.0">
+      </div>
+      <div class="form-group">
+        <label>log_level</label>
+        <select id="cfg-log_level">
+          <option>warning</option><option>info</option><option>debug</option><option>error</option><option>none</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-footer">
+      <button class="btn btn-primary" onclick="saveSettings()">保存并重载</button>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<!-- ── 添加用户 Modal ── -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <div class="modal-header">添加用户 <button class="btn btn-gray btn-sm" onclick="closeModal('add-modal')">✕</button></div>
+    <div class="modal-body">
+      <div style="display:grid;gap:12px">
+        <div class="form-group"><label>名称（唯一）</label><input id="m-name" placeholder="alice"></div>
+        <div class="form-group"><label>协议</label>
+          <select id="m-protocol"><option value="socks">SOCKS5</option><option value="http">HTTP</option></select>
+        </div>
+        <div class="form-group"><label>用户名（留空自动生成）</label><input id="m-username" placeholder="自动生成"></div>
+        <div class="form-group"><label>密码（留空自动生成）</label><input id="m-password" placeholder="自动生成"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-gray" onclick="closeModal('add-modal')">取消</button>
+      <button class="btn btn-primary" onclick="submitAdd()">创建</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';  // same origin
+
+// ── 工具 ──────────────────────────────────────────────────────
+async function apiFetch(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
+  return r.json().catch(() => ({}));
+}
+
+function toast(msg, ok = true) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = ok ? '#276749' : '#822727';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => toast('已复制'));
+}
+
+// ── 导航 ─────────────────────────────────────────────────────
+function showPage(name, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  if (el) el.classList.add('active');
+  if (name === 'overview') { loadStatus(); loadOverviewUsers(); }
+  if (name === 'users')    loadUsers();
+  if (name === 'export')   loadExport();
+  if (name === 'settings') loadSettings();
+}
+
+// ── 概览 ─────────────────────────────────────────────────────
+async function loadStatus() {
+  const d = await apiFetch('GET', '/api/status');
+  const el = document.getElementById('s-running');
+  el.textContent = d.running ? '● 运行中' : '● 已停止';
+  el.className = 'value ' + (d.running ? 'green' : 'red');
+  document.getElementById('s-users').textContent = (d.users || []).filter(u => u.enabled).length;
+  document.getElementById('s-ip').textContent = (d.config && d.config.server_ip) || '0.0.0.0';
+}
+
+async function loadOverviewUsers() {
+  const users = await apiFetch('GET', '/api/users');
+  const tb = document.getElementById('overview-users');
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">暂无用户</td></tr>'; return; }
+  tb.innerHTML = users.map(u => `
+    <tr>
+      <td><b>${esc(u.name)}</b></td>
+      <td><span class="badge blue">${u.protocol}</span></td>
+      <td class="tag-mono">${u.port}</td>
+      <td class="tag-mono">${esc(u.username)} / ${esc(u.password)}</td>
+      <td>${u.enabled ? '<span class="badge green">启用</span>' : '<span class="badge gray">禁用</span>'}</td>
+    </tr>`).join('');
+}
+
+async function apiStart()  { await apiFetch('POST','/api/start'); toast('已发送启动指令'); setTimeout(loadStatus,1500); }
+async function apiStop()   { await apiFetch('POST','/api/stop');  toast('已停止'); setTimeout(loadStatus,800); }
+async function apiReload() { await apiFetch('POST','/api/reload'); toast('配置已重载'); }
+
+// ── 用户管理 ─────────────────────────────────────────────────
+async function loadUsers() {
+  const users = await apiFetch('GET', '/api/users');
+  const tb = document.getElementById('users-table');
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="9" class="empty">暂无用户，点击"添加用户"</td></tr>'; return; }
+  tb.innerHTML = users.map(u => `
+    <tr>
+      <td class="tag-mono">${u.id}</td>
+      <td><b>${esc(u.name)}</b></td>
+      <td><span class="badge blue">${u.protocol}</span></td>
+      <td class="tag-mono">${u.port}</td>
+      <td class="tag-mono">${esc(u.username)}</td>
+      <td class="tag-mono" style="display:flex;align-items:center;gap:4px">
+        ${esc(u.password)}
+        <button class="copy-btn" onclick="copyText('${esc(u.password)}')">⧉</button>
+      </td>
+      <td style="color:#718096;font-size:12px">${esc(u.note||'')}</td>
+      <td>${u.enabled ? '<span class="badge green">启用</span>' : '<span class="badge gray">禁用</span>'}</td>
+      <td>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-gray btn-sm" onclick="toggleUser(${u.id},${u.enabled})">${u.enabled?'禁用':'启用'}</button>
+          <button class="btn btn-red btn-sm" onclick="deleteUser(${u.id},'${esc(u.name)}')">删除</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+async function toggleUser(id, enabled) {
+  await apiFetch('PATCH', `/api/users/${id}`, { enabled: !enabled });
+  toast(enabled ? '已禁用' : '已启用');
+  loadUsers();
+}
+
+async function deleteUser(id, name) {
+  if (!confirm(`确认删除用户 "${name}"？此操作将关闭对应防火墙端口。`)) return;
+  await apiFetch('DELETE', `/api/users/${id}`);
+  toast('已删除');
+  loadUsers();
+}
+
+function openAddModal() {
+  document.getElementById('m-name').value = '';
+  document.getElementById('m-username').value = '';
+  document.getElementById('m-password').value = '';
+  document.getElementById('m-protocol').value = 'socks';
+  document.getElementById('add-modal').classList.add('open');
+}
+
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+async function submitAdd() {
+  const name     = document.getElementById('m-name').value.trim();
+  const protocol = document.getElementById('m-protocol').value;
+  const username = document.getElementById('m-username').value.trim() || undefined;
+  const password = document.getElementById('m-password').value.trim() || undefined;
+  if (!name) { toast('请输入用户名称', false); return; }
+  const r = await apiFetch('POST', '/api/users', { name, protocol, username, password });
+  if (r.error) { toast('创建失败: ' + r.error, false); return; }
+  toast(`用户 "${name}" 已创建，端口: ${r.port}`);
+  closeModal('add-modal');
+  loadUsers();
+  loadOverviewUsers();
+}
+
+// ── 导出 ─────────────────────────────────────────────────────
+async function loadExport() {
+  const r = await fetch(API + '/api/export');
+  const yaml = await r.text();
+  document.getElementById('export-yaml').textContent = yaml;
+}
+
+function copyExport() {
+  copyText(document.getElementById('export-yaml').textContent);
+}
+
+// ── 设置 ─────────────────────────────────────────────────────
+async function loadSettings() {
+  const d = await apiFetch('GET', '/api/status');
+  if (d.config) {
+    document.getElementById('cfg-server_ip').value = d.config.server_ip || '';
+    document.getElementById('cfg-log_level').value  = d.config.log_level || 'warning';
+  }
+}
+
+async function saveSettings() {
+  // settings 通过 xray-ctl config 命令设置，这里直接调用 reload 并提示
+  // 实际上 API server 无独立 setting endpoint，通过 CLI 设置后 reload 生效
+  toast('设置已保存（请通过 xray-ctl config 命令修改服务端设置）', true);
+  await apiFetch('POST', '/api/reload');
+}
+
+// ── 工具 ─────────────────────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── 初始化 ───────────────────────────────────────────────────
+loadStatus();
+loadOverviewUsers();
+setInterval(() => {
+  if (document.getElementById('page-overview').classList.contains('active')) {
+    loadStatus();
+  }
+}, 8000);
+</script>
+</body>
+</html>

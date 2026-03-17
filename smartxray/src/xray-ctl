@@ -1,0 +1,670 @@
+#!/usr/bin/env node
+// xray-ctl — Xray Server 管理工具
+// 用法: xray-ctl [status|start|stop|restart|user|port|config|reload|ui|help]
+
+'use strict';
+
+const { execSync, exec, spawn } = require('child_process');
+const http  = require('http');
+const fs    = require('fs');
+const path  = require('path');
+const os    = require('os');
+const crypto = require('crypto');
+
+// ─── 路径常量 ────────────────────────────────────────────────
+const HOME       = process.env.HOME || os.homedir();
+const DATA_DIR   = `${HOME}/.config/smartxray`;
+const DB_FILE    = `${DATA_DIR}/smartxray.db`;
+const XRAY_CONF  = `${DATA_DIR}/config.json`;
+const LOG_FILE   = `${DATA_DIR}/logs/xray.log`;
+const PID_FILE   = `${DATA_DIR}/xray.pid`;
+const MIHOMO_OUT = `${DATA_DIR}/mihomo-proxies.yaml`;   // 导出给 mihomo 使用
+const API_PORT   = 9091;   // xray-ctl Web UI / API
+const XRAY_API_PORT = 9092; // xray 内置 API
+const PORT_MIN   = 10000;
+const PORT_MAX   = 19999;
+const BIN        = '/usr/local/bin/xray';
+
+// ANSI 颜色
+const c = {
+  green:  s => `\x1b[32m${s}\x1b[0m`,
+  red:    s => `\x1b[31m${s}\x1b[0m`,
+  yellow: s => `\x1b[33m${s}\x1b[0m`,
+  cyan:   s => `\x1b[36m${s}\x1b[0m`,
+  bold:   s => `\x1b[1m${s}\x1b[0m`,
+  dim:    s => `\x1b[2m${s}\x1b[0m`,
+};
+
+// ─── 工具函数 ────────────────────────────────────────────────
+function run(cmd) {
+  try { return execSync(cmd, { encoding: 'utf8' }).trim(); }
+  catch { return ''; }
+}
+
+function randStr(len = 16) {
+  return crypto.randomBytes(len).toString('base64url').slice(0, len);
+}
+
+function randPort() {
+  return Math.floor(Math.random() * (PORT_MAX - PORT_MIN + 1)) + PORT_MIN;
+}
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+// ─── SQLite 初始化 ───────────────────────────────────────────
+let _db = null;
+function db() {
+  if (_db) return _db;
+  try {
+    const Database = require('better-sqlite3');
+    ensureDir(DATA_DIR);
+    _db = new Database(DB_FILE);
+    _db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT    NOT NULL UNIQUE,
+        port       INTEGER NOT NULL UNIQUE,
+        protocol   TEXT    NOT NULL DEFAULT 'socks',
+        username   TEXT    NOT NULL,
+        password   TEXT    NOT NULL,
+        tag        TEXT    NOT NULL UNIQUE,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        note       TEXT    DEFAULT '',
+        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+      );
+    `);
+    return _db;
+  } catch (e) {
+    console.log(c.red(`✗ SQLite 初始化失败: ${e.message}`));
+    console.log(c.dim('  请先安装依赖: cd smartxray && npm install'));
+    process.exit(1);
+  }
+}
+
+function getSetting(key, def = '') {
+  const row = db().prepare('SELECT value FROM settings WHERE key=?').get(key);
+  return row ? row.value : def;
+}
+
+function setSetting(key, value) {
+  db().prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run(key, String(value));
+}
+
+// ─── Xray 进程管理 ───────────────────────────────────────────
+function isRunning() {
+  const pid = readPid();
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+}
+
+function readPid() {
+  try { return parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10); }
+  catch { return null; }
+}
+
+function writePid(pid) {
+  ensureDir(DATA_DIR);
+  fs.writeFileSync(PID_FILE, String(pid));
+}
+
+// ─── Xray 配置生成 ───────────────────────────────────────────
+function buildConfig() {
+  const users = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
+  const serverIp = getSetting('server_ip', '0.0.0.0');
+
+  const inbounds = users.map(u => {
+    const base = {
+      tag:      u.tag,
+      port:     u.port,
+      listen:   serverIp === '0.0.0.0' ? '0.0.0.0' : serverIp,
+      protocol: u.protocol,
+      sniffing: { enabled: true, destOverride: ['http', 'tls'] },
+    };
+    if (u.protocol === 'socks') {
+      base.settings = {
+        auth: 'password',
+        accounts: [{ user: u.username, pass: u.password }],
+        udp: true,
+      };
+    } else if (u.protocol === 'http') {
+      base.settings = {
+        accounts: [{ user: u.username, pass: u.password }],
+        allowTransparent: false,
+      };
+    }
+    return base;
+  });
+
+  // 内置 API inbound
+  inbounds.push({
+    tag:      'api',
+    port:     XRAY_API_PORT,
+    listen:   '127.0.0.1',
+    protocol: 'dokodemo-door',
+    settings: { address: '127.0.0.1' },
+  });
+
+  const config = {
+    log: {
+      loglevel: getSetting('log_level', 'warning'),
+      access:   LOG_FILE,
+      error:    LOG_FILE,
+    },
+    api: {
+      tag:      'api',
+      services: ['HandlerService', 'StatsService'],
+    },
+    stats: {},
+    policy: {
+      system: { statsInboundUplink: true, statsInboundDownlink: true },
+    },
+    routing: {
+      domainStrategy: 'IPIfNonMatch',
+      rules: [
+        { type: 'field', inboundTag: ['api'], outboundTag: 'direct' },
+        { type: 'field', ip: ['geoip:private'], outboundTag: 'direct' },
+        { type: 'field', ip: ['geoip:cn'], outboundTag: 'direct' },
+        { type: 'field', domain: ['geosite:cn'], outboundTag: 'direct' },
+      ],
+    },
+    inbounds,
+    outbounds: [
+      { tag: 'direct', protocol: 'freedom', settings: {} },
+      { tag: 'block',  protocol: 'blackhole', settings: {} },
+    ],
+  };
+
+  ensureDir(path.dirname(XRAY_CONF));
+  fs.writeFileSync(XRAY_CONF, JSON.stringify(config, null, 2));
+  return config;
+}
+
+// ─── 导出 mihomo proxies 片段 ────────────────────────────────
+function exportMihomoProxies() {
+  const users = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
+  if (!users.length) { fs.writeFileSync(MIHOMO_OUT, '# no proxies\n'); return; }
+  const serverIp = getSetting('server_ip', '127.0.0.1');
+  const lines = ['proxies:'];
+  for (const u of users) {
+    if (u.protocol === 'socks') {
+      lines.push(`  - name: "${u.name}"`);
+      lines.push(`    type: socks5`);
+      lines.push(`    server: ${serverIp}`);
+      lines.push(`    port: ${u.port}`);
+      lines.push(`    username: ${u.username}`);
+      lines.push(`    password: ${u.password}`);
+      lines.push(`    udp: true`);
+    } else if (u.protocol === 'http') {
+      lines.push(`  - name: "${u.name}"`);
+      lines.push(`    type: http`);
+      lines.push(`    server: ${serverIp}`);
+      lines.push(`    port: ${u.port}`);
+      lines.push(`    username: ${u.username}`);
+      lines.push(`    password: ${u.password}`);
+    }
+  }
+  fs.writeFileSync(MIHOMO_OUT, lines.join('\n') + '\n');
+  console.log(c.dim(`  mihomo 配置已导出 → ${MIHOMO_OUT}`));
+}
+
+// ─── 防火墙端口管理 ──────────────────────────────────────────
+function firewallOpen(port) {
+  const ufw   = run('which ufw 2>/dev/null');
+  const fwcmd = run('which firewall-cmd 2>/dev/null');
+  const ipt   = run('which iptables 2>/dev/null');
+
+  if (ufw) {
+    run(`sudo ufw allow ${port}/tcp 2>/dev/null`);
+    run(`sudo ufw allow ${port}/udp 2>/dev/null`);
+    return 'ufw';
+  }
+  if (fwcmd) {
+    run(`sudo firewall-cmd --permanent --add-port=${port}/tcp 2>/dev/null`);
+    run(`sudo firewall-cmd --permanent --add-port=${port}/udp 2>/dev/null`);
+    run('sudo firewall-cmd --reload 2>/dev/null');
+    return 'firewall-cmd';
+  }
+  if (ipt) {
+    run(`sudo iptables -I INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null`);
+    run(`sudo iptables -I INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null`);
+    return 'iptables';
+  }
+  // macOS pf anchor（仅供本地测试，服务端一般在 Linux）
+  if (process.platform === 'darwin') {
+    run(`echo "pass in proto tcp to any port ${port}" | sudo pfctl -a 'com.xray/user-${port}' -f - 2>/dev/null`);
+    run(`echo "pass in proto udp to any port ${port}" | sudo pfctl -a 'com.xray/user-${port}' -f - 2>/dev/null`);
+    return 'pf';
+  }
+  return null;
+}
+
+function firewallClose(port) {
+  const ufw   = run('which ufw 2>/dev/null');
+  const fwcmd = run('which firewall-cmd 2>/dev/null');
+  const ipt   = run('which iptables 2>/dev/null');
+
+  if (ufw) {
+    run(`sudo ufw delete allow ${port}/tcp 2>/dev/null`);
+    run(`sudo ufw delete allow ${port}/udp 2>/dev/null`);
+  } else if (fwcmd) {
+    run(`sudo firewall-cmd --permanent --remove-port=${port}/tcp 2>/dev/null`);
+    run(`sudo firewall-cmd --permanent --remove-port=${port}/udp 2>/dev/null`);
+    run('sudo firewall-cmd --reload 2>/dev/null');
+  } else if (ipt) {
+    run(`sudo iptables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null`);
+    run(`sudo iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null`);
+  } else if (process.platform === 'darwin') {
+    run(`sudo pfctl -a 'com.xray/user-${port}' -F nat 2>/dev/null`);
+    run(`sudo pfctl -a 'com.xray/user-${port}' -F rules 2>/dev/null`);
+  }
+}
+
+// ─── 命令：status ────────────────────────────────────────────
+function cmdStatus() {
+  const running = isRunning();
+  const pid     = readPid();
+  const ver     = running ? run(`${BIN} version 2>/dev/null | head -1`) : '';
+  const users   = db().prepare('SELECT * FROM users ORDER BY port').all();
+  const enabled = users.filter(u => u.enabled);
+
+  console.log(c.bold('\n── Xray Server 状态 ────────────────────────────'));
+  console.log(`  状态 : ${running ? c.green('● 运行中') : c.red('● 已停止')}${ver ? '  ' + c.dim(ver) : ''}`);
+  if (pid) console.log(`  PID  : ${c.dim(pid)}`);
+  console.log(`  配置 : ${XRAY_CONF}`);
+  console.log(`  数据库: ${DB_FILE}  (${users.length} 用户, ${enabled.length} 启用)`);
+  console.log(`  Web UI: ${c.cyan(`http://127.0.0.1:${API_PORT}/`)}`);
+  if (!users.length) {
+    console.log(c.yellow('\n  尚无用户，运行: xray-ctl user add <名称>'));
+  } else {
+    console.log(c.bold('\n  用户列表:'));
+    console.log(c.dim('  ' + ['ID','名称','协议','端口','用户名','密码','状态'].map(s => s.padEnd(12)).join('')));
+    for (const u of users) {
+      const st = u.enabled ? c.green('启用') : c.dim('禁用');
+      console.log('  ' + [u.id, u.name, u.protocol, u.port, u.username, u.password, st].map(s => String(s).padEnd(12)).join(''));
+    }
+  }
+  console.log('');
+}
+
+// ─── 命令：start ─────────────────────────────────────────────
+async function cmdStart() {
+  if (isRunning()) {
+    console.log(c.yellow('⚠ Xray 已在运行'));
+    return;
+  }
+  if (!fs.existsSync(BIN)) {
+    console.log(c.red(`✗ 找不到 xray 二进制: ${BIN}`));
+    console.log(c.dim('  请先运行: node scripts/install.js'));
+    return;
+  }
+  ensureDir(DATA_DIR);
+  ensureDir(path.dirname(LOG_FILE));
+  buildConfig();
+  console.log('启动 Xray...');
+  const child = spawn(BIN, ['run', '-c', XRAY_CONF], {
+    detached: true,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  child.unref();
+  writePid(child.pid);
+  await new Promise(r => setTimeout(r, 1200));
+  if (isRunning()) {
+    console.log(c.green(`✓ Xray 已启动  PID=${child.pid}`));
+    startApiServer();
+  } else {
+    console.log(c.red('✗ 启动失败，检查日志: ' + LOG_FILE));
+  }
+}
+
+// ─── 命令：stop ──────────────────────────────────────────────
+function cmdStop() {
+  const pid = readPid();
+  if (!pid || !isRunning()) {
+    console.log(c.yellow('⚠ Xray 未运行'));
+    return;
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+    fs.unlinkSync(PID_FILE);
+    console.log(c.green('✓ Xray 已停止'));
+  } catch (e) {
+    console.log(c.red(`✗ 停止失败: ${e.message}`));
+  }
+}
+
+// ─── 命令：reload（热重载配置）────────────────────────────────
+function cmdReload() {
+  buildConfig();
+  exportMihomoProxies();
+  const pid = readPid();
+  if (pid && isRunning()) {
+    try {
+      process.kill(pid, 'SIGUSR1');   // xray 支持 SIGUSR1 热重载
+      console.log(c.green('✓ 配置已重载 (SIGUSR1)'));
+    } catch {
+      console.log(c.yellow('⚠ 无法发送 SIGUSR1，重启进程...'));
+      cmdStop();
+      setTimeout(cmdStart, 500);
+    }
+  } else {
+    console.log(c.dim('  Xray 未运行，已更新配置文件'));
+  }
+}
+
+// ─── 命令：user ──────────────────────────────────────────────
+function cmdUser(args) {
+  const sub = args[0];
+
+  if (!sub || sub === 'list') {
+    const users = db().prepare('SELECT * FROM users ORDER BY port').all();
+    if (!users.length) { console.log(c.yellow('  尚无用户，运行: xray-ctl user add <名称>')); return; }
+    console.log(c.bold('\n── 用户列表 ──────────────────────────────────'));
+    for (const u of users) {
+      const st = u.enabled ? c.green('✓') : c.dim('✗');
+      console.log(`  ${st} [${u.id}] ${c.bold(u.name.padEnd(16))} ${u.protocol.padEnd(6)} :${u.port}  ${u.username}/${u.password}  ${c.dim(u.note)}`);
+    }
+    return;
+  }
+
+  if (sub === 'add') {
+    const name     = args[1] || `user-${Date.now()}`;
+    const protocol = (args[2] || 'socks').toLowerCase();
+    const username = args[3] || randStr(8);
+    const password = args[4] || randStr(12);
+
+    // 找空闲端口
+    const usedPorts = new Set(db().prepare('SELECT port FROM users').all().map(r => r.port));
+    let port;
+    let tries = 0;
+    do { port = randPort(); tries++; } while (usedPorts.has(port) && tries < 1000);
+
+    const tag = `inbound-${name}-${port}`;
+    try {
+      db().prepare(`
+        INSERT INTO users (name, port, protocol, username, password, tag)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(name, port, protocol, username, password, tag);
+
+      const fw = firewallOpen(port);
+      cmdReload();
+
+      console.log(c.green(`✓ 用户 "${name}" 已创建`));
+      console.log(`  协议: ${protocol}  端口: ${c.cyan(port)}`);
+      console.log(`  账号: ${c.cyan(username)} / ${c.cyan(password)}`);
+      if (fw) console.log(c.dim(`  防火墙: 已开放端口 ${port} (${fw})`));
+    } catch (e) {
+      if (e.message.includes('UNIQUE')) console.log(c.red(`✗ 用户名 "${name}" 已存在`));
+      else console.log(c.red(`✗ 添加失败: ${e.message}`));
+    }
+    return;
+  }
+
+  if (sub === 'del' || sub === 'delete' || sub === 'remove') {
+    const name = args[1];
+    if (!name) { console.log(c.red('用法: xray-ctl user del <名称>')); return; }
+    const user = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(name, parseInt(name));
+    if (!user) { console.log(c.red(`✗ 用户 "${name}" 不存在`)); return; }
+    db().prepare('DELETE FROM users WHERE id=?').run(user.id);
+    firewallClose(user.port);
+    cmdReload();
+    console.log(c.green(`✓ 用户 "${user.name}" 已删除，端口 ${user.port} 已关闭`));
+    return;
+  }
+
+  if (sub === 'enable' || sub === 'disable') {
+    const name = args[1];
+    if (!name) { console.log(c.red(`用法: xray-ctl user ${sub} <名称>`)); return; }
+    const user = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(name, parseInt(name));
+    if (!user) { console.log(c.red(`✗ 用户 "${name}" 不存在`)); return; }
+    const enabled = sub === 'enable' ? 1 : 0;
+    db().prepare('UPDATE users SET enabled=? WHERE id=?').run(enabled, user.id);
+    if (enabled) firewallOpen(user.port); else firewallClose(user.port);
+    cmdReload();
+    console.log(c.green(`✓ 用户 "${user.name}" 已${sub === 'enable' ? '启用' : '禁用'}`));
+    return;
+  }
+
+  if (sub === 'passwd') {
+    const name = args[1];
+    const newPass = args[2] || randStr(12);
+    if (!name) { console.log(c.red('用法: xray-ctl user passwd <名称> [新密码]')); return; }
+    const user = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(name, parseInt(name));
+    if (!user) { console.log(c.red(`✗ 用户 "${name}" 不存在`)); return; }
+    db().prepare('UPDATE users SET password=? WHERE id=?').run(newPass, user.id);
+    cmdReload();
+    console.log(c.green(`✓ 密码已更新: ${c.cyan(newPass)}`));
+    return;
+  }
+
+  console.log(c.dim('用法: xray-ctl user [list|add|del|enable|disable|passwd] ...'));
+}
+
+// ─── 命令：config ────────────────────────────────────────────
+function cmdConfig(args) {
+  const key = args[0], val = args[1];
+  const validKeys = ['server_ip', 'log_level'];
+  if (!key) {
+    console.log(c.bold('\n── 设置 ──────────────────────────────────────'));
+    for (const k of validKeys) console.log(`  ${k.padEnd(20)} = ${getSetting(k) || c.dim('(默认)')}`);
+    console.log(c.dim('\n  修改: xray-ctl config <key> <value>'));
+    console.log(c.dim('  server_ip: xray 监听 IP（发布到客户端 / mihomo 配置）'));
+    console.log(c.dim('  log_level: debug|info|warning|error|none'));
+    return;
+  }
+  if (!validKeys.includes(key)) { console.log(c.red(`✗ 未知配置项: ${key}`)); return; }
+  if (!val) { console.log(`  ${key} = ${getSetting(key) || c.dim('(默认)')}`); return; }
+  setSetting(key, val);
+  console.log(c.green(`✓ ${key} = ${val}`));
+  cmdReload();
+}
+
+// ─── 命令：export（导出 mihomo 配置片段）────────────────────
+function cmdExport() {
+  exportMihomoProxies();
+  console.log(c.green(`✓ mihomo proxies 片段已导出 → ${MIHOMO_OUT}`));
+  console.log(c.dim('  在 mihomo config.yaml 末尾添加:'));
+  console.log(c.cyan(`  # !include ${MIHOMO_OUT}`));
+  // 同时打印内容供直接复制
+  console.log('\n' + fs.readFileSync(MIHOMO_OUT, 'utf8'));
+}
+
+// ─── Web UI + HTTP API Server ─────────────────────────────────
+function apiResponse(res, code, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(code, {
+    'Content-Type':  'application/json',
+    'Content-Length': Buffer.byteLength(body),
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(body);
+}
+
+function startApiServer() {
+  const uiFile = path.join(__dirname, '..', 'ui', 'index.html');
+
+  const server = http.createServer((req, res) => {
+    const url   = req.url.split('?')[0];
+    const method = req.method;
+
+    // CORS preflight
+    if (method === 'OPTIONS') {
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': '*', 'Access-Control-Allow-Headers': '*' });
+      res.end(); return;
+    }
+
+    // 静态 UI
+    if (url === '/' || url === '/ui' || url === '/ui/') {
+      if (fs.existsSync(uiFile)) {
+        const html = fs.readFileSync(uiFile, 'utf8');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(html); return;
+      }
+      res.writeHead(404); res.end('UI not found. Run install first.'); return;
+    }
+
+    // ── API 路由 ──────────────────────────────────────────────
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      let json = {};
+      try { if (body) json = JSON.parse(body); } catch {}
+
+      // GET /api/status
+      if (method === 'GET' && url === '/api/status') {
+        return apiResponse(res, 200, {
+          running: isRunning(),
+          pid:     readPid(),
+          users:   db().prepare('SELECT * FROM users ORDER BY port').all(),
+          config:  { server_ip: getSetting('server_ip'), log_level: getSetting('log_level') },
+        });
+      }
+
+      // GET /api/users
+      if (method === 'GET' && url === '/api/users') {
+        return apiResponse(res, 200, db().prepare('SELECT * FROM users ORDER BY port').all());
+      }
+
+      // POST /api/users  { name, protocol, username, password }
+      if (method === 'POST' && url === '/api/users') {
+        const name     = json.name || `user-${Date.now()}`;
+        const protocol = (json.protocol || 'socks').toLowerCase();
+        const username = json.username || randStr(8);
+        const password = json.password || randStr(12);
+        const usedPorts = new Set(db().prepare('SELECT port FROM users').all().map(r => r.port));
+        let port, tries = 0;
+        do { port = randPort(); tries++; } while (usedPorts.has(port) && tries < 1000);
+        const tag = `inbound-${name}-${port}`;
+        try {
+          db().prepare('INSERT INTO users (name,port,protocol,username,password,tag) VALUES (?,?,?,?,?,?)').run(name, port, protocol, username, password, tag);
+          firewallOpen(port);
+          cmdReload();
+          return apiResponse(res, 201, db().prepare('SELECT * FROM users WHERE name=?').get(name));
+        } catch (e) {
+          return apiResponse(res, 400, { error: e.message });
+        }
+      }
+
+      // DELETE /api/users/:id
+      const delMatch = url.match(/^\/api\/users\/(\d+)$/);
+      if (method === 'DELETE' && delMatch) {
+        const user = db().prepare('SELECT * FROM users WHERE id=?').get(parseInt(delMatch[1]));
+        if (!user) return apiResponse(res, 404, { error: 'not found' });
+        db().prepare('DELETE FROM users WHERE id=?').run(user.id);
+        firewallClose(user.port);
+        cmdReload();
+        return apiResponse(res, 200, { ok: true });
+      }
+
+      // PATCH /api/users/:id  { enabled, password, note }
+      const patchMatch = url.match(/^\/api\/users\/(\d+)$/);
+      if (method === 'PATCH' && patchMatch) {
+        const user = db().prepare('SELECT * FROM users WHERE id=?').get(parseInt(patchMatch[1]));
+        if (!user) return apiResponse(res, 404, { error: 'not found' });
+        if (typeof json.enabled !== 'undefined') {
+          db().prepare('UPDATE users SET enabled=? WHERE id=?').run(json.enabled ? 1 : 0, user.id);
+          json.enabled ? firewallOpen(user.port) : firewallClose(user.port);
+        }
+        if (json.password) db().prepare('UPDATE users SET password=? WHERE id=?').run(json.password, user.id);
+        if (json.note !== undefined) db().prepare('UPDATE users SET note=? WHERE id=?').run(json.note, user.id);
+        cmdReload();
+        return apiResponse(res, 200, db().prepare('SELECT * FROM users WHERE id=?').get(user.id));
+      }
+
+      // POST /api/reload
+      if (method === 'POST' && url === '/api/reload') {
+        cmdReload();
+        return apiResponse(res, 200, { ok: true });
+      }
+
+      // POST /api/start
+      if (method === 'POST' && url === '/api/start') {
+        cmdStart().then(() => apiResponse(res, 200, { running: isRunning() }));
+        return;
+      }
+
+      // POST /api/stop
+      if (method === 'POST' && url === '/api/stop') {
+        cmdStop();
+        return apiResponse(res, 200, { running: false });
+      }
+
+      // GET /api/export
+      if (method === 'GET' && url === '/api/export') {
+        exportMihomoProxies();
+        const yaml = fs.existsSync(MIHOMO_OUT) ? fs.readFileSync(MIHOMO_OUT, 'utf8') : '';
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end(yaml);
+      }
+
+      res.writeHead(404); res.end();
+    });
+  });
+
+  server.on('error', e => {
+    if (e.code === 'EADDRINUSE') console.log(c.dim(`  API server 已在运行 (port ${API_PORT})`));
+  });
+  server.listen(API_PORT, '127.0.0.1', () => {
+    console.log(c.dim(`  Web UI: http://127.0.0.1:${API_PORT}/`));
+  });
+}
+
+// ─── help ────────────────────────────────────────────────────
+function printHelp() {
+  console.log(`
+${c.bold('xray-ctl')} — Xray Server 管理工具
+
+${c.bold('进程管理')}
+  xray-ctl start              启动 Xray
+  xray-ctl stop               停止 Xray
+  xray-ctl restart            重启 Xray
+  xray-ctl status             状态 / 用户列表
+  xray-ctl reload             热重载配置 (SIGUSR1)
+
+${c.bold('用户管理')} (自动操作防火墙 + 热重载)
+  xray-ctl user list          列出所有用户
+  xray-ctl user add <名称> [socks|http] [用户名] [密码]
+  xray-ctl user del <名称|ID>
+  xray-ctl user enable  <名称|ID>
+  xray-ctl user disable <名称|ID>
+  xray-ctl user passwd  <名称|ID> [新密码]
+
+${c.bold('配置')}
+  xray-ctl config             查看设置
+  xray-ctl config server_ip <IP>    设置对外 IP（用于生成 mihomo 配置）
+  xray-ctl config log_level <级别>  debug|info|warning|error|none
+
+${c.bold('导出')}
+  xray-ctl export             导出 mihomo proxies 片段 → ${MIHOMO_OUT}
+
+${c.bold('Web UI')}
+  xray-ctl ui                 启动 Web UI（http://127.0.0.1:${API_PORT}/）
+`);
+}
+
+// ─── 主入口 ──────────────────────────────────────────────────
+const [,, cmd, ...args] = process.argv;
+
+(async () => {
+  switch (cmd) {
+    case 'start':   await cmdStart(); break;
+    case 'stop':    cmdStop(); break;
+    case 'restart': cmdStop(); await new Promise(r => setTimeout(r, 800)); await cmdStart(); break;
+    case 'status':  cmdStatus(); break;
+    case 'reload':  cmdReload(); break;
+    case 'user':    cmdUser(args); break;
+    case 'config':  cmdConfig(args); break;
+    case 'export':  cmdExport(); break;
+    case 'ui':      startApiServer(); console.log(c.green(`✓ Web UI 已启动 → http://127.0.0.1:${API_PORT}/`)); break;
+    case 'help': case '--help': case '-h': printHelp(); break;
+    default:
+      if (!cmd) { cmdStatus(); }
+      else { console.log(c.red(`未知命令: ${cmd}`)); printHelp(); }
+  }
+})();

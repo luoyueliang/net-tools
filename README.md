@@ -7,6 +7,7 @@ macOS 网络工具集合，每个子目录为一个独立的网络工具。
 | 目录 | 描述 | 技术栈 |
 |------|------|--------|
 | [mihomo](./mihomo/) | Mihomo (Clash Meta) 代理管理 CLI 工具 | Node.js |
+| [smartxray](./smartxray/) | Xray 服务端管理（SQLite 用户库 + 动态配置 + 防火墙 + Web UI） | Node.js |
 
 ## 根目录结构
 
