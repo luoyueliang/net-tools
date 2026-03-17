@@ -106,7 +106,7 @@ async function installBin() {
     latest = JSON.parse(out).tag_name;
   } catch { error('Failed to fetch latest version. Check your network.'); }
 
-  const osMap = { macos: 'darwin', linux: 'linux', freebsd: 'freebsd', openwrt: 'linux' };
+  const osMap = { macos: 'darwin', linux: 'linux', alpine: 'linux', freebsd: 'freebsd', openwrt: 'linux' };
   const osName = osMap[PLATFORM];
   const url = `https://github.com/MetaCubeX/mihomo/releases/download/${latest}/mihomo-${osName}-${ARCH}-${latest}.gz`;
   const tmp = `/tmp/mihomo-${latest}.gz`;
@@ -168,9 +168,10 @@ function installStartup() {
   } else if (PLATFORM === 'linux') {
     const src = path.join(SCRIPT_DIR, 'platform/linux/mihomo.service');
     const dst = '/etc/systemd/system/mihomo.service';
-    let content = fs.readFileSync(src, 'utf8').replace(/__USER__/g, user);
-    // Update config dir path for current user
-    content = content.replace(/\/home\/__USER__/g, HOME);
+    // /home/__USER__ must be replaced BEFORE __USER__ to handle root (HOME=/root)
+    let content = fs.readFileSync(src, 'utf8')
+      .replace(/\/home\/__USER__/g, HOME)
+      .replace(/__USER__/g, user);
     run(`sudo tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
     run('sudo systemctl daemon-reload');
     success(`systemd service installed: ${dst}`);
@@ -189,9 +190,10 @@ function installStartup() {
   } else if (PLATFORM === 'alpine') {
     const src = path.join(SCRIPT_DIR, 'platform/alpine/mihomo.openrc');
     const dst = '/etc/init.d/mihomo';
-    let content = fs.readFileSync(src, 'utf8').replace(/__USER__/g, user);
-    // Fix home dir path for root vs regular user
-    content = content.replace(/\/home\/__USER__/g, HOME);
+    // /home/__USER__ must be replaced BEFORE __USER__ to handle root (HOME=/root)
+    let content = fs.readFileSync(src, 'utf8')
+      .replace(/\/home\/__USER__/g, HOME)
+      .replace(/__USER__/g, user);
     run(`sudo tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
     run(`sudo chmod +x "${dst}"`);
     success(`OpenRC init script installed: ${dst}`);

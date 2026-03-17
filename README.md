@@ -1,6 +1,6 @@
 # net-tools
 
-macOS 网络工具集合，每个子目录为一个独立的网络工具。
+macOS / Linux / FreeBSD / Alpine / OpenWrt 网络工具集合，每个子目录为一个独立的网络工具。
 
 ## 工具列表
 
