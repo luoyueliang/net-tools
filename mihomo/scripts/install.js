@@ -26,6 +26,33 @@ function run(cmd, opts = {}) {
   return (execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }) ?? '').trim();
 }
 
+// ── Proxy setup ──────────────────────────────────────────────────
+async function promptProxy() {
+  const existing = process.env.HTTPS_PROXY || process.env.https_proxy ||
+                   process.env.HTTP_PROXY  || process.env.http_proxy  ||
+                   process.env.ALL_PROXY   || process.env.all_proxy;
+  if (existing) { info(`检测到代理环境变量: ${existing}`); return; }
+
+  const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+  const proxy = await new Promise(resolve => {
+    process.stdout.write(c.cyan('[INFO] ') + '未检测到代理，如访问 GitHub 有问题可设置下载代理\n');
+    rl.question('       (输入 http://host:port 或直接回车跳过): ', ans => { rl.close(); resolve(ans.trim()); });
+  });
+  if (!proxy) { info('跳过代理设置，直接连接'); return; }
+
+  process.env.http_proxy  = proxy;
+  process.env.https_proxy = proxy;
+  process.env.HTTP_PROXY  = proxy;
+  process.env.HTTPS_PROXY = proxy;
+  info(`代理已设置: ${proxy}，测试连通性...`);
+  try {
+    run(`curl -sf --max-time 8 --proxy "${proxy}" "https://www.google.com" -o /dev/null`);
+    success('代理连通性测试通过 ✓');
+  } catch {
+    warn('代理连通性测试未通过，将继续安装（下载失败时请检查代理地址是否正确）');
+  }
+}
+
 // ── Detect platform ──────────────────────────────────────────────
 function detectPlatform() {
   if (fs.existsSync('/etc/openwrt_release'))  return 'openwrt';
@@ -260,6 +287,7 @@ async function main() {
   console.log(c.bold('='.repeat(50)) + '\n');
 
   checkNode();
+  await promptProxy();
   await installBin();
   createDirs();
   installConfig();

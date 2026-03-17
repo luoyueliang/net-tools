@@ -30,6 +30,28 @@ if %errorlevel% neq 0 (
 for /f "tokens=*" %%V in ('node -e "process.stdout.write(process.version)"') do set "NODE_VER=%%V"
 echo [OK]   Node.js %NODE_VER%
 
+:: ── Proxy setup ────────────────────────────────────────────────
+set "_HAS_PROXY=0"
+if defined HTTP_PROXY  set "_HAS_PROXY=1"
+if defined HTTPS_PROXY set "_HAS_PROXY=1"
+if defined http_proxy  set "_HAS_PROXY=1"
+if defined https_proxy set "_HAS_PROXY=1"
+if "%_HAS_PROXY%"=="1" (
+    echo [INFO] 检测到代理，下载将使用现有代理设置
+    goto :proxy_done
+)
+echo.
+echo [INFO] 未检测到代理，如访问 GitHub 有问题可设置下载代理
+set "PROXY_INPUT="
+set /p "PROXY_INPUT=       输入 http://host:port (或直接回车跳过): "
+if "%PROXY_INPUT%"=="" goto :proxy_done
+set "HTTP_PROXY=%PROXY_INPUT%"
+set "HTTPS_PROXY=%PROXY_INPUT%"
+echo [INFO] 代理已设置: %PROXY_INPUT%，测试连通性...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "try{Invoke-WebRequest -Uri 'https://www.google.com' -Proxy '%PROXY_INPUT%' -UseBasicParsing -TimeoutSec 8 -ea Stop|Out-Null;Write-Host '[OK]   代理连通性测试通过' -ForegroundColor Green}catch{Write-Host '[WARN] 代理连通性测试未通过，将继续安装' -ForegroundColor Yellow}"
+:proxy_done
+
 :: ── Step 2: Create config directories ────────────────────
 if not exist "%DATA_DIR%" (mkdir "%DATA_DIR%" && echo [OK]   Created %DATA_DIR%)
 if not exist "%LOGS_DIR%" (mkdir "%LOGS_DIR%" && echo [OK]   Created %LOGS_DIR%)
@@ -51,6 +73,7 @@ if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
 if not exist "%BIN_DIR%\mihomo.exe" (
     echo [INFO] Downloading latest mihomo binary...
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+      "if($env:HTTP_PROXY){[Net.WebRequest]::DefaultWebProxy=New-Object Net.WebProxy($env:HTTP_PROXY);[Net.WebRequest]::DefaultWebProxy.Credentials=[Net.CredentialCache]::DefaultCredentials};" ^
       "$r=Invoke-RestMethod 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest';" ^
       "$tag=$r.tag_name;" ^
       "$arch=if([Environment]::Is64BitOperatingSystem){'amd64'}else{'386'};" ^

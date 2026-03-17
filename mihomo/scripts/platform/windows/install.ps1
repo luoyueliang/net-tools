@@ -35,6 +35,35 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 }
 OK "Node.js $(node -e 'process.stdout.write(process.version)')"
 
+# ── Proxy setup ──────────────────────────────────────────────────
+$_ep = $env:HTTPS_PROXY
+if (-not $_ep) { $_ep = $env:HTTP_PROXY }
+if (-not $_ep) { $_ep = $env:https_proxy }
+if (-not $_ep) { $_ep = $env:http_proxy }
+if ($_ep) {
+    INFO "检测到代理环境变量: $_ep"
+    [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($_ep)
+    [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+} else {
+    Write-Host ""
+    Write-Host "[INFO] 未检测到代理，如访问 GitHub 有问题可设置下载代理" -ForegroundColor Cyan
+    $proxyInput = (Read-Host "       输入 http://host:port (或留空跳过)").Trim()
+    if ($proxyInput -ne '') {
+        $env:HTTP_PROXY  = $proxyInput
+        $env:HTTPS_PROXY = $proxyInput
+        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxyInput)
+        [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+        INFO "代理已设置: $proxyInput，测试连通性..."
+        try {
+            Invoke-WebRequest -Uri 'https://www.google.com' -UseBasicParsing -TimeoutSec 8 `
+                -Proxy $proxyInput -ErrorAction Stop | Out-Null
+            OK "代理连通性测试通过 ✓"
+        } catch {
+            WARN "代理连通性测试未通过，将继续安装（下载失败时请检查代理地址）"
+        }
+    } else { INFO "跳过代理设置，直接连接" }
+}
+
 # ── Step 2: Create config directories ────────────────────
 foreach ($dir in @($DataDir, $LogsDir)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null; OK "Created $dir" }
