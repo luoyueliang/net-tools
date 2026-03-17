@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION  = '1.4.0';
+const VERSION  = '1.4.1';
 const SELF_UPDATE_URL = process.env.MIHOMO_CTL_UPDATE_URL
   || 'https://raw.githubusercontent.com/luoyueliang/net-tools/main/mihomo/src/mihomo-ctl';
 const API    = 'http://127.0.0.1:9090';
@@ -137,7 +137,7 @@ function createServiceAdapter(name, stopCmd, startCmd) {
     async restoreAll() { throw new Error('平台不支持 DNS 管理'); },
     flushDns()        { run('resolvectl flush-caches 2>/dev/null || nscd -K 2>/dev/null || true'); },
     isDnsActive()     { return false; },
-    printDnsStatus()  { console.log(c.yellow(`⚠ dns-on/off 仅支持 macOS / Windows（当前平台: ${this.name}）`)); },
+    printDnsStatus()  { console.log(c.yellow(`⚠ 当前平台 (${this.name}) 不支持 DNS 管理`)); },
     adminHint()       {},
     dnsOnSuccess(_iface) { console.log(c.dim('  关闭: mihomo-ctl dns-off')); },
     dnsOnErrorHint(_iface) {},
@@ -571,8 +571,107 @@ PLATFORM_ADAPTERS.alpine = {
   enableAutostart()    { run('sudo rc-update add mihomo default 2>/dev/null || true'); console.log(c.green('✓ 已启用开机自启 (rc-update add mihomo default)')); },
   disableAutostart()   { run('sudo rc-update del mihomo default 2>/dev/null || true'); console.log(c.dim('✓ 已禁用开机自启')); },
 };
-PLATFORM_ADAPTERS.openwrt = createServiceAdapter('openwrt', '/etc/init.d/mihomo stop 2>/dev/null || true',   '/etc/init.d/mihomo start 2>/dev/null || true');
-PLATFORM_ADAPTERS.freebsd = createServiceAdapter('freebsd', 'sudo service mihomo stop 2>/dev/null || true',  'sudo service mihomo start 2>/dev/null || true');
+PLATFORM_ADAPTERS.openwrt = {
+  ...createServiceAdapter('openwrt', '/etc/init.d/mihomo stop 2>/dev/null || true', '/etc/init.d/mihomo start 2>/dev/null || true'),
+  // OpenWrt init.d 开机自启（通过 /etc/rc.d/ 符号链接管理）
+  isAutostartEnabled() { return !!run('find /etc/rc.d -name "*mihomo*" 2>/dev/null'); },
+  enableAutostart()    { run('/etc/init.d/mihomo enable 2>/dev/null || true'); console.log(c.green('✓ 已启用开机自启 (/etc/init.d/mihomo enable)')); },
+  disableAutostart()   { run('/etc/init.d/mihomo disable 2>/dev/null || true'); console.log(c.dim('✓ 已禁用开机自启')); },
+  // OpenWrt 用 busybox netstat，无 ss
+  port7890Ok() { return !!run('netstat -tln 2>/dev/null | grep ":7890 "'); },
+};
+
+// FreeBSD 扩展适配器：pf DNS 接管（/etc/resolv.conf + pfctl anchor）+ sysrc 自启管理
+function createFreeBSDAdapter(name, stopCmd, startCmd) {
+  return {
+    ...createServiceAdapter(name, stopCmd, startCmd),
+    supportsDns: true,
+
+    // ── 开机自启（sysrc）─────────────────────────────────────
+    isAutostartEnabled() { return run('sysrc -n mihomo_enable 2>/dev/null').trim().toUpperCase() === 'YES'; },
+    enableAutostart()    { run('sudo sysrc mihomo_enable=YES 2>/dev/null || true'); console.log(c.green('✓ 已启用开机自启 (sysrc mihomo_enable=YES)')); },
+    disableAutostart()   { run('sudo sysrc mihomo_enable=NO 2>/dev/null || true'); console.log(c.dim('✓ 已禁用开机自启')); },
+
+    // ── 网络接口 ─────────────────────────────────────────────
+    getActiveInterface() {
+      return run("route get default 2>/dev/null | awk '/interface:/{print $2}'").trim() || 'em0';
+    },
+
+    // ── pf DNS 重定向（53 → 1053，与 macOS 一致）───────────
+    checkDns1053() { return !!run('lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo'); },
+    getDnsServers(_iface) {
+      const out = run("awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null");
+      return out ? out.split('\n').filter(Boolean) : [];
+    },
+    setDnsToMihomo(_iface) {
+      // 先备份 resolv.conf（-n 保证不覆盖已有备份）
+      run('sudo cp -n /etc/resolv.conf /etc/resolv.conf.mihomo-bak 2>/dev/null');
+      const tmpConf = path.join(TMP, 'mihomo-resolv.conf');
+      const current = run('cat /etc/resolv.conf 2>/dev/null');
+      const noNs    = current.split('\n').filter(l => !l.trim().startsWith('nameserver')).join('\n').trim();
+      fs.writeFileSync(tmpConf, 'nameserver 127.0.0.1\n' + (noNs ? noNs + '\n' : ''));
+      execSync(`sudo cp "${tmpConf}" /etc/resolv.conf`, { stdio: 'pipe' });
+    },
+    loadPfAnchor() {
+      const conf = 'rdr on lo0 proto udp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053\n'
+                 + 'rdr on lo0 proto tcp from any to 127.0.0.1 port 53 -> 127.0.0.1 port 1053\n';
+      fs.writeFileSync(PF_CONF, conf);
+      execSync(`sudo pfctl -a 'mihomo-dns' -f "${PF_CONF}"`, { stdio: ['inherit', 'pipe', 'pipe'] });
+      execSync('sudo pfctl -e 2>/dev/null || true', { stdio: 'pipe' });
+      if (!run(`sudo pfctl -a 'mihomo-dns' -sn 2>/dev/null`).includes('1053'))
+        throw new Error('pf anchor 规则加载后验证失败');
+    },
+    isPfAnchorActive() { return run(`sudo pfctl -a 'mihomo-dns' -sn 2>/dev/null`).includes('1053'); },
+    async restoreAll(_iface, _dns) {
+      run(`sudo pfctl -a 'mihomo-dns' -F nat 2>/dev/null || true`);
+      try { fs.unlinkSync(PF_CONF); } catch {}
+      // 优先从文件备份恢复
+      if (fs.existsSync('/etc/resolv.conf.mihomo-bak')) {
+        run('sudo mv /etc/resolv.conf.mihomo-bak /etc/resolv.conf 2>/dev/null');
+        const servers = run("awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null");
+        return servers ? servers.split('\n').filter(Boolean).join(', ') : '（已从备份恢复）';
+      }
+      // 从 dns-on 时保存的列表恢复
+      if (_dns && _dns.length) {
+        const tmpConf = path.join(TMP, 'mihomo-resolv.conf');
+        const current = run('cat /etc/resolv.conf 2>/dev/null');
+        const noNs    = current.split('\n').filter(l => !l.trim().startsWith('nameserver')).join('\n').trim();
+        fs.writeFileSync(tmpConf, _dns.map(s => `nameserver ${s}`).join('\n') + '\n' + (noNs ? noNs + '\n' : ''));
+        execSync(`sudo cp "${tmpConf}" /etc/resolv.conf`, { stdio: 'pipe' });
+        return _dns.join(', ');
+      }
+      return '（pf anchor 已移除，resolv.conf 未变更）';
+    },
+    flushDns() { run('resolvconf -u 2>/dev/null || true'); },
+    isDnsActive(_iface) { return this.isPfAnchorActive() && this.getDnsServers().includes('127.0.0.1'); },
+    printDnsStatus(_iface) {
+      const servers     = this.getDnsServers();
+      const mihomoIsDns = servers.includes('127.0.0.1');
+      const port1053    = this.checkDns1053();
+      const pfOk        = this.isPfAnchorActive();
+      console.log(`  系统 DNS (/etc/resolv.conf) : ${c.cyan(servers.length ? servers.join(', ') : '(未知)')}`);
+      console.log(`  Mihomo 监听 1053       : ${port1053 ? c.green('✓') : c.red('✗')}`);
+      console.log(`  pf rdr anchor          : ${pfOk ? c.green('✓ 已加载') : c.red('✗ 未加载')}`);
+      if (pfOk && mihomoIsDns && port1053)
+        console.log(`  接管状态 : ${c.green('已接管（pf 重定向）')}`);
+      else if (mihomoIsDns && !pfOk)
+        console.log(`  接管状态 : ${c.yellow('⚠ resolv.conf=127.0.0.1 但 pf 规则未加载，运行 dns-on 修复')}`);
+      else
+        console.log(`  接管状态 : ${c.dim('未接管')}`);
+    },
+    adminHint() { console.log(c.dim('  需要 sudo 权限')); },
+    dnsOnSuccess(_iface) {
+      console.log(c.green('✓ DNS 已接管 → 127.0.0.1:1053 (Mihomo DoH)'));
+      console.log(c.dim('  关闭: mihomo-ctl dns-off'));
+    },
+    dnsOnErrorHint(_iface) {
+      this.adminHint();
+      console.log(c.cyan(`  sudo pfctl -a 'mihomo-dns' -f "${PF_CONF}" && sudo pfctl -e`));
+    },
+  };
+}
+
+PLATFORM_ADAPTERS.freebsd = createFreeBSDAdapter('freebsd', 'sudo service mihomo stop 2>/dev/null || true', 'sudo service mihomo start 2>/dev/null || true');
 
 // 全局平台适配器实例（唯一入口）
 const P = PLATFORM_ADAPTERS[detectPlatform()] || PLATFORM_ADAPTERS.linux;
@@ -883,9 +982,7 @@ async function cmdProxyOff() {
 // ─── 命令：dns-on / dns-off ──────────────────────────────────
 async function cmdDnsOn() {
   if (!P.supportsDns) {
-    console.log(c.yellow(`⚠ dns-on 仅支持 macOS / Windows（当前平台: ${P.name}）`));
-    console.log(c.dim('  Linux 可用 iptables 重定向：'));
-    console.log(c.dim('  sudo iptables -t nat -A OUTPUT -p udp ! -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports 1053'));
+    console.log(c.yellow(`⚠ 当前平台 (${P.name}) 暂不支持 dns-on`));
     return;
   }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
@@ -1722,9 +1819,9 @@ ${c.cyan('系统代理（需 sudo，macOS 专属）')}
   mihomo-ctl proxy-on         接管当前路由接口的 HTTP/HTTPS/SOCKS 代理
   mihomo-ctl proxy-off        关闭系统代理（浏览器恢复直连）
 
-${c.cyan('DNS 防污染（需管理员/sudo，macOS · Linux · Alpine · Windows）')}
+${c.cyan('DNS 防污染（需管理员/sudo，macOS · FreeBSD · Linux · Alpine · Windows）')}
   mihomo-ctl dns              查看 DNS 接管状态
-  mihomo-ctl dns-on           接管 DNS → Mihomo（macOS: pf+DoH · Linux/Alpine: iptables · Windows: netsh）
+  mihomo-ctl dns-on           接管 DNS → Mihomo（macOS/FreeBSD: pf+DoH · Linux/Alpine: iptables · Windows: netsh）
   mihomo-ctl dns-off          恢复系统 DNS
 
 ${c.cyan('终端临时代理（所有平台）')}
