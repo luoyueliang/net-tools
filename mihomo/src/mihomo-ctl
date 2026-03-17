@@ -741,12 +741,39 @@ async function cmdSelfUpgrade() {
   console.log(c.dim(`  来源: ${SELF_UPDATE_URL}\n`));
 
   const tmp = '/tmp/mihomo-ctl-new';
+
+  // 读取 macOS 系统代理（mihomo proxy-on 时已设置），显式传给 curl
+  // 不传会导致 curl 走透明代理层，TLS 证书 SAN 不匹配
+  let proxyArg = '';
+  try {
+    const sp = execSync('scutil --proxy 2>/dev/null', { encoding: 'utf8' });
+    const httpsOn   = (sp.match(/HTTPSEnable\s*:\s*(\d+)/)  || [])[1] === '1';
+    const httpsHost = (sp.match(/HTTPSProxy\s*:\s*(\S+)/)   || [])[1];
+    const httpsPort = (sp.match(/HTTPSPort\s*:\s*(\d+)/)    || [])[1];
+    if (httpsOn && httpsHost && httpsPort) {
+      proxyArg = `-x "http://${httpsHost}:${httpsPort}"`;
+    } else {
+      const socksOn   = (sp.match(/SOCKSEnable\s*:\s*(\d+)/) || [])[1] === '1';
+      const socksHost = (sp.match(/SOCKSProxy\s*:\s*(\S+)/)  || [])[1];
+      const socksPort = (sp.match(/SOCKSPort\s*:\s*(\d+)/)   || [])[1];
+      if (socksOn && socksHost && socksPort) proxyArg = `--socks5 "${socksHost}:${socksPort}"`;
+    }
+  } catch {}
+
   process.stdout.write('  下载最新版本... ');
   try {
-    execSync(`curl -fsSL --max-time 30 -o "${tmp}" "${SELF_UPDATE_URL}"`, { stdio: 'pipe' });
+    execSync(`curl -fsSL --max-time 30 ${proxyArg} -o "${tmp}" "${SELF_UPDATE_URL}"`, { stdio: 'pipe' });
   } catch (e) {
-    console.log(c.red(`失败\n  ${e.message}`));
-    console.log(c.dim('  请确认已推送到 GitHub，或设置 MIHOMO_CTL_UPDATE_URL 环境变量'));
+    const is404 = e.message && e.message.includes('404');
+    console.log(c.red('失败'));
+    if (is404) {
+      console.log(c.yellow('  HTTP 404 — 文件不存在'));
+      console.log(c.dim('  请先将仓库推送到 GitHub，或通过环境变量指向实际地址：'));
+      console.log(c.dim('  MIHOMO_CTL_UPDATE_URL=<url> mihomo-ctl self-upgrade'));
+    } else {
+      console.log(c.dim(`  ${e.message}`));
+      console.log(c.dim('  请检查网络，或设置 MIHOMO_CTL_UPDATE_URL 环境变量'));
+    }
     return;
   }
 
