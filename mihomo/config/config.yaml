@@ -132,6 +132,13 @@ rules:
   - DOMAIN-SUFFIX,bytedance.com,DIRECT
   - DOMAIN-SUFFIX,douyin.com,DIRECT
 
+  # Telegram 走代理（防止 GeoIP 误判为 CN 导致直连超时）
+  - GEOSITE,telegram,🌐 默认出口
+  - IP-CIDR,91.108.4.0/22,🌐 默认出口
+  - IP-CIDR,91.108.56.0/22,🌐 默认出口
+  - IP-CIDR,149.154.160.0/20,🌐 默认出口
+  - IP-CIDR,149.154.164.0/22,🌐 默认出口
+
   # 中国大陆 IP 直连
   - GEOIP,CN,DIRECT
 
