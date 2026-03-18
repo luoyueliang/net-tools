@@ -162,26 +162,40 @@ const rawKB = (fs.statSync(RAW_FILE).size / 1024).toFixed(0);
 const gzKB  = (gzipped.length / 1024).toFixed(0);
 ok(`${path.basename(GZ_FILE)}  (${rawKB} KB \u2192 ${gzKB} KB gz)`);
 
-// ── Step 6: installer tar.gz（install.js + 混淆 mihomo-ctl，目录结构与仓库一致）──
-// 结构: mihomo-ctl-installer-{ver}/scripts/install.js
-//       mihomo-ctl-installer-{ver}/src/mihomo-ctl
-// 用法: tar xzf mihomo-ctl-installer-{ver}.tar.gz && cd mihomo-ctl-installer-{ver} && node scripts/install.js
+// ── Step 6: installer tar.gz（完整目录结构，含所有平台 plist/service + config 模板）──
+// 结构与仓库 mihomo/ 目录一致，解压后直接 node scripts/install.js 即可
+// 包含: scripts/（install.js + platform/**）、src/mihomo-ctl（混淆版）、config/
 const installerName = `mihomo-ctl-installer-${VERSION}`;
 const installerTar  = path.join(distDir, `${installerName}.tar.gz`);
 const pkgDir        = path.join(distDir, '_pkg', installerName);
-const pkgScripts    = path.join(pkgDir, 'scripts');
-const pkgSrc        = path.join(pkgDir, 'src');
 
 // 清理旧包目录
 if (fs.existsSync(path.join(distDir, '_pkg'))) fs.rmSync(path.join(distDir, '_pkg'), { recursive: true, force: true });
-fs.mkdirSync(pkgScripts, { recursive: true });
-fs.mkdirSync(pkgSrc,     { recursive: true });
 
-// 复制 install.js（原始，未混淆）
-fs.copyFileSync(path.join(rootDir, 'scripts', 'install.js'), path.join(pkgScripts, 'install.js'));
-// 复制混淆后的 mihomo-ctl
-fs.copyFileSync(RAW_FILE, path.join(pkgSrc, 'mihomo-ctl'));
-fs.chmodSync(path.join(pkgSrc, 'mihomo-ctl'), 0o755);
+// 递归复制目录（排除列表）
+function copyDir(src, dst, exclude = []) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (exclude.includes(entry.name)) continue;
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    if (entry.isDirectory()) copyDir(s, d, exclude);
+    else { fs.copyFileSync(s, d); fs.chmodSync(d, fs.statSync(s).mode); }
+  }
+}
+
+// 复制 scripts/（含 platform/**），排除 release.js 本身
+copyDir(path.join(rootDir, 'scripts'), path.join(pkgDir, 'scripts'), ['release.js']);
+// 复制 config/（模板）
+copyDir(path.join(rootDir, 'config'), path.join(pkgDir, 'config'));
+// 复制 ui/（install.js 里的 installUi() 需要）
+if (fs.existsSync(path.join(rootDir, 'ui'))) {
+  copyDir(path.join(rootDir, 'ui'), path.join(pkgDir, 'ui'));
+}
+// src/mihomo-ctl 用混淆版替换
+fs.mkdirSync(path.join(pkgDir, 'src'), { recursive: true });
+fs.copyFileSync(RAW_FILE, path.join(pkgDir, 'src', 'mihomo-ctl'));
+fs.chmodSync(path.join(pkgDir, 'src', 'mihomo-ctl'), 0o755);
 
 if (fs.existsSync(installerTar)) fs.rmSync(installerTar, { force: true });
 execSync(`tar czf "${installerTar}" -C "${path.join(distDir, '_pkg')}" "${installerName}"`, { stdio: 'pipe' });
