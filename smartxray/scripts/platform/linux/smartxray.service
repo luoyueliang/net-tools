@@ -1,16 +1,16 @@
 [Unit]
 Description=SmartXray - Xray Server Manager
-After=network.target
+After=network.target NetworkManager.service systemd-networkd.service
 
 [Service]
 Type=simple
-User=nobody
-ExecStart=/usr/local/bin/xray run -c /etc/smartxray/config.json
+User=__USER__
+ExecStart=/usr/local/bin/xray run -c /home/__USER__/.config/smartxray/config.json
+StandardOutput=append:/home/__USER__/.config/smartxray/logs/xray.log
+StandardError=append:/home/__USER__/.config/smartxray/logs/xray.log
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

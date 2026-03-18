@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# __TOOL_NAME__ OpenRC init script (Alpine Linux)
+
+name="__TOOL_NAME__"
+description="__TOOL_NAME__ service"
+command="/usr/local/bin/__BIN_NAME__"
+command_args="--config /home/__USER__/.config/__TOOL_NAME__/config.yaml"
+command_user="__USER__"
+command_background=true
+pidfile="/run/__TOOL_NAME__.pid"
+output_log="/home/__USER__/.config/__TOOL_NAME__/logs/__TOOL_NAME__.log"
+error_log="/home/__USER__/.config/__TOOL_NAME__/logs/__TOOL_NAME__.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    mkdir -p /home/__USER__/.config/__TOOL_NAME__/logs
+    checkpath -d -m 0755 -o __USER__ /home/__USER__/.config/__TOOL_NAME__
+}

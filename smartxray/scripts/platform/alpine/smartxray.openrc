@@ -4,11 +4,12 @@
 name="smartxray"
 description="SmartXray - Xray Server Manager"
 command="/usr/local/bin/xray"
-command_args="run -c /etc/smartxray/config.json"
+command_args="run -c /home/__USER__/.config/smartxray/config.json"
+command_user="__USER__"
 command_background=true
 pidfile="/run/smartxray.pid"
-output_log="/var/log/smartxray/xray.log"
-error_log="/var/log/smartxray/xray.log"
+output_log="/home/__USER__/.config/smartxray/logs/xray.log"
+error_log="/home/__USER__/.config/smartxray/logs/xray.log"
 
 depend() {
     need net
@@ -16,5 +17,6 @@ depend() {
 }
 
 start_pre() {
-    mkdir -p /var/log/smartxray /etc/smartxray
+    mkdir -p /home/__USER__/.config/smartxray/logs
+    checkpath -d -m 0755 -o __USER__ /home/__USER__/.config/smartxray
 }

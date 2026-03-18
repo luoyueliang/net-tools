@@ -1,0 +1,16 @@
+[Unit]
+Description=__TOOL_NAME__ service
+After=network.target NetworkManager.service systemd-networkd.service
+
+[Service]
+Type=simple
+User=__USER__
+ExecStart=/usr/local/bin/__BIN_NAME__ --config /home/__USER__/.config/__TOOL_NAME__/config.yaml
+StandardOutput=append:/home/__USER__/.config/__TOOL_NAME__/logs/__TOOL_NAME__.log
+StandardError=append:/home/__USER__/.config/__TOOL_NAME__/logs/__TOOL_NAME__.log
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

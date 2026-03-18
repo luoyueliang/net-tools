@@ -6,7 +6,7 @@
 
 - **用户数据库**：SQLite 存储用户/端口信息，支持增删改查
 - **动态配置**：实时生成 `xray config.json`，`SIGUSR1` 热重载无需重启
-- **协议支持**：SOCKS5（含 UDP）、HTTP 代理，账号密码认证
+- **协议支持**：SOCKS5（含 UDP）、HTTP 代理，账号密码认证；VLESS + XTLS-Reality
 - **防火墙联动**：添加/删除用户时自动操作 `ufw` / `firewall-cmd` / `iptables` / pf
 - **mihomo 集成**：一键导出 proxies 配置片段，可直接插入 mihomo `config.yaml`
 - **Web UI**：内嵌单文件仪表盘（`http://127.0.0.1:9091/`），支持用户管理、状态监控
@@ -24,11 +24,11 @@ smartxray/
       linux/            smartxray.service（systemd）
       alpine/           smartxray.openrc（OpenRC）
       freebsd/          smartxray（rc.d）
-      openwrt/          smartxray（procd）
   config/
     config.example.json xray 配置模板（参考）
   ui/
     index.html          Web 管理界面
+    self-service.html   用户自助申请页面
   data/                 运行时数据（.gitkeep）
   logs/                 日志（.gitkeep）
   package.json          npm 依赖（better-sqlite3）
@@ -50,11 +50,14 @@ node scripts/install.js
 ```
 
 安装脚本做了以下事情：
-1. 创建 `~/.config/smartxray/` 运行时目录
-2. 执行 `npm install`（安装 `better-sqlite3`）
-3. 从 GitHub releases 下载适合当前平台/架构的 xray 二进制
-4. 安装 `xray-ctl` 到 `/usr/local/bin/xray-ctl`
-5. 安装平台对应的服务脚本（默认禁用自启）
+1. Node.js 版本检查（≥ v16）
+2. 检测代理环境变量（可手动输入代理地址加速 GitHub 下载）
+3. 执行 `npm install`（安装 `better-sqlite3`）
+4. 从 GitHub releases 下载适合当前平台/架构的 xray 二进制
+5. 创建 `~/.config/smartxray/` 运行时目录
+6. 安装平台对应的服务脚本（默认禁用自启）
+7. 安装 `xray-ctl` 到 `/usr/local/bin/xray-ctl`
+8. 安装 Web UI 到 `~/.config/smartxray/ui/`
 
 不下载 xray（已手动安装的场景）：
 ```bash
@@ -66,11 +69,12 @@ node scripts/install.js --no-download
 ### 进程管理
 
 ```bash
-xray-ctl start          # 启动 Xray
-xray-ctl stop           # 停止 Xray
-xray-ctl restart        # 重启
-xray-ctl status         # 查看状态 + 用户列表
-xray-ctl reload         # 热重载配置（SIGUSR1）
+xray-ctl start               # 启动 Xray
+xray-ctl stop                # 停止 Xray
+xray-ctl restart             # 重启
+xray-ctl status              # 查看状态 + 用户列表
+xray-ctl reload              # 热重载配置（SIGUSR1）
+xray-ctl autostart on|off    # 开机自启管理（跨平台）
 ```
 
 ### 用户管理
@@ -78,7 +82,6 @@ xray-ctl reload         # 热重载配置（SIGUSR1）
 ```bash
 # 添加用户（自动分配端口、开放防火墙、热重载）
 xray-ctl user add alice
-xray-ctl user add bob http          # HTTP 代理
 xray-ctl user add carol socks user1 pass123  # 指定账密
 
 # 列出用户
@@ -93,6 +96,14 @@ xray-ctl user disable alice
 
 # 修改密码
 xray-ctl user passwd alice newpass
+```
+
+### Reality（VLESS + XTLS-Reality）
+
+```bash
+xray-ctl reality init [port] [dest]  # 生成密钥对并启用 Reality
+xray-ctl reality show                # 查看 Reality 配置
+xray-ctl reality disable             # 禁用 Reality
 ```
 
 ### 配置
@@ -127,5 +138,7 @@ xray-ctl ui
 | `~/.config/smartxray/config.json` | 当前生效的 xray 配置（自动生成，勿手动编辑） |
 | `~/.config/smartxray/mihomo-proxies.yaml` | 导出的 mihomo proxies 片段 |
 | `~/.config/smartxray/logs/xray.log` | xray 运行日志 |
+| `~/.config/smartxray/ui/` | Web UI 文件（运行时） |
 | `data/.gitkeep` | 运行时数据占位 |
+| `logs/.gitkeep` | 日志占位 |
 | `logs/.gitkeep` | 日志占位 |

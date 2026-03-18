@@ -26,6 +26,9 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
+const VERSION       = '2.1.0';
+const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
+const PLIST_DISABLED = `${PLIST}.disabled`;
 
 // ANSI 颜色
 const c = {
@@ -42,6 +45,52 @@ function run(cmd) {
   try { return execSync(cmd, { encoding: 'utf8' }).trim(); }
   catch { return ''; }
 }
+
+// ─── 平台检测 ────────────────────────────────────────────────
+function detectPlatform() {
+  if (process.platform === 'darwin') return 'macos';
+  if (fs.existsSync('/etc/alpine-release'))  return 'alpine';
+  if (process.platform === 'linux')   return 'linux';
+  if (process.platform === 'freebsd') return 'freebsd';
+  return 'linux';
+}
+
+// ─── 开机自启管理（跨平台）─────────────────────────────────
+const AUTOSTART = {
+  macos: {
+    isEnabled()  { return fs.existsSync(PLIST) && !fs.existsSync(PLIST_DISABLED); },
+    enable() {
+      if (fs.existsSync(PLIST_DISABLED)) fs.renameSync(PLIST_DISABLED, PLIST);
+      else if (!fs.existsSync(PLIST)) throw new Error('plist 文件不存在，请重新安装');
+      run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+      console.log(c.green('✓ 已启用开机自启'));
+      console.log(c.dim(`  plist: ${PLIST}`));
+    },
+    disable() {
+      if (fs.existsSync(PLIST) && !fs.existsSync(PLIST_DISABLED)) {
+        run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+        fs.renameSync(PLIST, PLIST_DISABLED);
+      }
+      console.log(c.dim('✓ 已禁用开机自启（当前进程不受影响）'));
+    },
+  },
+  linux: {
+    isEnabled()  { return run('systemctl is-enabled smartxray 2>/dev/null').includes('enabled'); },
+    enable()     { run('sudo systemctl enable smartxray 2>/dev/null || true'); console.log(c.green('✓ 已启用开机自启 (systemctl enable smartxray)')); },
+    disable()    { run('sudo systemctl disable smartxray 2>/dev/null || true'); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+  alpine: {
+    isEnabled()  { return !!run('rc-status default 2>/dev/null | grep smartxray'); },
+    enable()     { run('sudo rc-update add smartxray default 2>/dev/null || true'); console.log(c.green('✓ 已启用开机自启 (rc-update add smartxray default)')); },
+    disable()    { run('sudo rc-update del smartxray default 2>/dev/null || true'); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+  freebsd: {
+    isEnabled()  { return run('sysrc -n smartxray_enable 2>/dev/null').trim().toUpperCase() === 'YES'; },
+    enable()     { run('sudo sysrc smartxray_enable=YES 2>/dev/null || true'); console.log(c.green('✓ 已启用开机自启 (sysrc smartxray_enable=YES)')); },
+    disable()    { run('sudo sysrc smartxray_enable=NO 2>/dev/null || true'); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+};
+const autostartAdapter = AUTOSTART[detectPlatform()] || AUTOSTART.linux;
 
 function randStr(len = 16) {
   return crypto.randomBytes(len).toString('base64url').slice(0, len);
@@ -856,6 +905,23 @@ function startApiServer() {
   });
 }
 
+// ─── 命令：autostart ─────────────────────────────────────────
+function cmdAutostart(args) {
+  const sub = args[0];
+  if (sub === 'on') {
+    try { autostartAdapter.enable(); }
+    catch (e) { console.log(c.red(`✗ ${e.message}`)); }
+    return;
+  }
+  if (sub === 'off') {
+    autostartAdapter.disable();
+    return;
+  }
+  const enabled = autostartAdapter.isEnabled();
+  console.log(`开机自启: ${enabled ? c.green('已启用') : c.dim('已禁用')}`);
+  console.log(c.dim('  修改: xray-ctl autostart on|off'));
+}
+
 // ─── help ────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
@@ -867,6 +933,7 @@ ${c.bold('进程管理')}
   xray-ctl restart            重启 Xray
   xray-ctl status             状态 / 用户列表
   xray-ctl reload             热重载配置 (SIGUSR1)
+  xray-ctl autostart on|off   开机自启管理（跨平台）
 
 ${c.bold('用户管理')} (自动操作防火墙 + 热重载)
   xray-ctl user list
@@ -911,6 +978,7 @@ const [,, cmd, ...args] = process.argv;
     case 'restart':     cmdStop(); await new Promise(r => setTimeout(r, 800)); await cmdStart(); break;
     case 'status':      cmdStatus(); break;
     case 'reload':      cmdReload(); break;
+    case 'autostart':   cmdAutostart(args); break;
     case 'user':        cmdUser(args); break;
     case 'reality':     cmdReality(args); break;
     case 'selfservice': cmdSelfservice(args); break;

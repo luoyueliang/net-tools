@@ -9,7 +9,8 @@
 name="smartxray"
 rcvar="smartxray_enable"
 command="/usr/local/bin/xray"
-command_args="run -c /usr/local/etc/smartxray/config.json"
+command_args="run -c /home/__USER__/.config/smartxray/config.json"
+smartxray_user="__USER__"
 smartxray_enable="${smartxray_enable-NO}"
 pidfile="/var/run/smartxray.pid"
 load_rc_config $name

@@ -1,0 +1,312 @@
+#!/usr/bin/env node
+// __CTL_NAME__ — __TOOL_NAME__ 管理工具
+// 用法: __CTL_NAME__ [status|start|stop|restart|autostart|log|help]
+//
+// ── 使用说明 ──────────────────────────────────────────────────
+// 1. 全局替换占位符: __TOOL_NAME__ / __CTL_NAME__ / __BIN_NAME__
+//    __PLIST_ID__ / __API_PORT__ / __VERSION__
+// 2. 在 "TODO: 实现核心业务逻辑" 处添加工具特有的命令和逻辑
+// 3. 按需修改 startProcess() 中的启动参数
+// ─────────────────────────────────────────────────────────────
+
+'use strict';
+
+const { execSync, exec } = require('child_process');
+const http = require('http');
+const os   = require('os');
+const path = require('path');
+const fs   = require('fs');
+
+// ─── 常量 ─────────────────────────────────────────────────────
+const VERSION    = '__VERSION__';
+const TOOL_NAME  = '__TOOL_NAME__';
+const CTL_NAME   = '__CTL_NAME__';
+const BIN        = '/usr/local/bin/__BIN_NAME__';
+const API        = 'http://127.0.0.1:__API_PORT__';
+const CONFIG_DIR = path.join(os.homedir(), '.config', TOOL_NAME);
+const LOG        = path.join(CONFIG_DIR, 'logs', `${TOOL_NAME}.log`);
+const PLIST      = `${os.homedir()}/Library/LaunchAgents/__PLIST_ID__.plist`;
+const PLIST_DISABLED = `${PLIST}.disabled`;
+const TMP        = os.tmpdir();
+
+// ─── ANSI 颜色 ────────────────────────────────────────────────
+const c = {
+  green:  s => `\x1b[32m${s}\x1b[0m`,
+  red:    s => `\x1b[31m${s}\x1b[0m`,
+  yellow: s => `\x1b[33m${s}\x1b[0m`,
+  cyan:   s => `\x1b[36m${s}\x1b[0m`,
+  bold:   s => `\x1b[1m${s}\x1b[0m`,
+  dim:    s => `\x1b[2m${s}\x1b[0m`,
+};
+
+// ─── 工具函数 ─────────────────────────────────────────────────
+function run(cmd) {
+  try { return execSync(cmd, { encoding: 'utf8', shell: '/bin/sh' }).trim(); }
+  catch { return ''; }
+}
+
+function apiGet(urlPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`${API}${urlPath}`, { timeout: 3000 }, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(data); } });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+function apiPut(urlPath, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const u    = new URL(`${API}${urlPath}`);
+    const opts = {
+      hostname: u.hostname, port: u.port, path: u.pathname,
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 3000,
+    };
+    const req = http.request(opts, res => {
+      let d = '';
+      res.on('data', chunk => d += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, body: d }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(data);
+    req.end();
+  });
+}
+
+// ─── 平台检测 ─────────────────────────────────────────────────
+function detectPlatform() {
+  if (process.platform === 'darwin') return 'macos';
+  if (fs.existsSync('/etc/alpine-release'))  return 'alpine';
+  if (fs.existsSync('/etc/openwrt_release')) return 'openwrt';
+  if (process.platform === 'linux')   return 'linux';
+  if (process.platform === 'freebsd') return 'freebsd';
+  return 'linux';
+}
+
+// ─── 通用服务适配器工厂 ───────────────────────────────────────
+// 为 systemd / OpenRC / rc.d 等 Linux 系列生成基础适配器
+function createServiceAdapter(name, stopCmd, startCmd) {
+  return {
+    name,
+    stopProcess()  { run(stopCmd);  },
+    startProcess() { run(startCmd); },
+    forceKill()    { run(`pkill -KILL -f '${BIN}' 2>/dev/null || true`); },
+    getPid()       { return run(`pgrep -f '${BIN}'`); },
+    isAutostartEnabled()  { return false; },
+    enableAutostart()     { console.log(c.yellow('⚠ 请使用系统服务管理器配置自启')); },
+    disableAutostart()    { console.log(c.yellow('⚠ 请使用系统服务管理器配置自启')); },
+    installBin(tmpBin)    { execSync(`sudo mv "${tmpBin}" "${BIN}"`, { stdio: 'pipe' }); },
+    backupBin(bkBin)      { if (fs.existsSync(BIN)) run(`sudo cp "${BIN}" "${bkBin}" 2>/dev/null`); },
+    rollbackBin(bkBin)    { run(`sudo mv "${bkBin}" "${BIN}" 2>/dev/null || true`); },
+  };
+}
+
+// ─── 平台适配器注册表 ─────────────────────────────────────────
+const PLATFORM_ADAPTERS = {
+  // ── macOS ────────────────────────────────────────────────────
+  macos: {
+    ...createServiceAdapter('macos', '', ''),
+    stopProcess() {
+      run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+      run(`pkill -f '${BIN}' 2>/dev/null || true`);
+    },
+    startProcess() {
+      if (fs.existsSync(PLIST)) run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+      // TODO: 修改为你的工具实际启动命令
+      else exec(`${BIN} >> "${LOG}" 2>&1 &`);
+    },
+    getPid() { return run(`pgrep -f '${BIN}'`); },
+    isAutostartEnabled() { return fs.existsSync(PLIST) && !fs.existsSync(PLIST_DISABLED); },
+    enableAutostart() {
+      if (fs.existsSync(PLIST_DISABLED)) fs.renameSync(PLIST_DISABLED, PLIST);
+      else if (!fs.existsSync(PLIST)) throw new Error('plist 文件不存在，请重新安装');
+      run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+      console.log(c.green('✓ 已启用开机自启'));
+      console.log(c.dim(`  plist: ${PLIST}`));
+    },
+    disableAutostart() {
+      if (fs.existsSync(PLIST) && !fs.existsSync(PLIST_DISABLED)) {
+        run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+        fs.renameSync(PLIST, PLIST_DISABLED);
+      }
+      console.log(c.dim('✓ 已禁用开机自启（当前进程不受影响）'));
+    },
+    installBin(tmpBin) {
+      execSync(`sudo mv "${tmpBin}" "${BIN}"`, { stdio: 'pipe' });
+      run(`xattr -d com.apple.quarantine "${BIN}" 2>/dev/null || true`);
+    },
+  },
+
+  // ── Linux (systemd) ──────────────────────────────────────────
+  linux: {
+    ...createServiceAdapter('linux',
+      `sudo systemctl stop ${TOOL_NAME} 2>/dev/null || true`,
+      `sudo systemctl start ${TOOL_NAME} 2>/dev/null || true`
+    ),
+    isAutostartEnabled() { return run(`systemctl is-enabled ${TOOL_NAME} 2>/dev/null`).includes('enabled'); },
+    enableAutostart()    { run(`sudo systemctl enable ${TOOL_NAME} 2>/dev/null || true`); console.log(c.green(`✓ 已启用开机自启 (systemctl enable ${TOOL_NAME})`)); },
+    disableAutostart()   { run(`sudo systemctl disable ${TOOL_NAME} 2>/dev/null || true`); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+
+  // ── Alpine Linux (OpenRC) ────────────────────────────────────
+  alpine: {
+    ...createServiceAdapter('alpine',
+      `rc-service ${TOOL_NAME} stop 2>/dev/null || true`,
+      `rc-service ${TOOL_NAME} start 2>/dev/null || true`
+    ),
+    isAutostartEnabled() { return !!run(`rc-status default 2>/dev/null | grep ${TOOL_NAME}`); },
+    enableAutostart()    { run(`sudo rc-update add ${TOOL_NAME} default 2>/dev/null || true`); console.log(c.green(`✓ 已启用开机自启 (rc-update add ${TOOL_NAME} default)`)); },
+    disableAutostart()   { run(`sudo rc-update del ${TOOL_NAME} default 2>/dev/null || true`); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+
+  // ── FreeBSD (rc.d) ────────────────────────────────────────────
+  freebsd: {
+    ...createServiceAdapter('freebsd',
+      `sudo service ${TOOL_NAME} stop 2>/dev/null || true`,
+      `sudo service ${TOOL_NAME} start 2>/dev/null || true`
+    ),
+    isAutostartEnabled() { return run(`sysrc -n ${TOOL_NAME}_enable 2>/dev/null`).trim().toUpperCase() === 'YES'; },
+    enableAutostart()    { run(`sudo sysrc ${TOOL_NAME}_enable=YES 2>/dev/null || true`); console.log(c.green(`✓ 已启用开机自启 (sysrc ${TOOL_NAME}_enable=YES)`)); },
+    disableAutostart()   { run(`sudo sysrc ${TOOL_NAME}_enable=NO 2>/dev/null || true`); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+
+  // ── OpenWrt (procd) ── 根据需要保留或删除 ─────────────────────
+  openwrt: {
+    ...createServiceAdapter('openwrt',
+      `/etc/init.d/${TOOL_NAME} stop 2>/dev/null || true`,
+      `/etc/init.d/${TOOL_NAME} start 2>/dev/null || true`
+    ),
+    isAutostartEnabled() { return !!run(`find /etc/rc.d -name "*${TOOL_NAME}*" 2>/dev/null`); },
+    enableAutostart()    { run(`/etc/init.d/${TOOL_NAME} enable 2>/dev/null || true`); console.log(c.green('✓ 已启用开机自启')); },
+    disableAutostart()   { run(`/etc/init.d/${TOOL_NAME} disable 2>/dev/null || true`); console.log(c.dim('✓ 已禁用开机自启')); },
+  },
+};
+
+// 全局平台适配器实例（唯一入口）
+const P = PLATFORM_ADAPTERS[detectPlatform()] || PLATFORM_ADAPTERS.linux;
+
+// ─── API 状态检测 ─────────────────────────────────────────────
+async function isRunning() {
+  try { await apiGet('/version'); return true; }
+  catch { return false; }
+  // TODO: 若工具无 HTTP API，改用进程检测：
+  // return !!P.getPid();
+}
+
+// ─── 命令：status ─────────────────────────────────────────────
+async function cmdStatus() {
+  console.log(c.bold(`\n── ${TOOL_NAME} 状态 ──────────────────────────────`));
+  const autostartStr = P.isAutostartEnabled() ? c.green('开机自启: 已启用') : c.dim('开机自启: 已禁用');
+  const running = await isRunning();
+  if (!running) {
+    const pid = P.getPid();
+    const ver = run(`"${BIN}" --version 2>/dev/null | head -1`);
+    console.log(c.red('● 未运行') + (ver ? `  ${c.dim(ver)}` : '') + `   ctl: v${VERSION}   ${autostartStr}`);
+    return;
+  }
+  const pid = P.getPid();
+  console.log(c.green('● 运行中') + `   ctl: v${VERSION}   ${autostartStr}`);
+  console.log(`  PID: ${pid || '?'}`);
+
+  // TODO: 添加工具特有的状态信息，例如：
+  // const info = await apiGet('/info').catch(() => ({}));
+  // console.log(`  版本: ${info.version || '?'}`);
+}
+
+// ─── 命令：start ──────────────────────────────────────────────
+async function cmdStart() {
+  if (await isRunning()) { console.log(c.yellow(`⚠ ${TOOL_NAME} 已在运行`)); return; }
+  if (!fs.existsSync(BIN)) {
+    console.log(c.red(`✗ 找不到二进制: ${BIN}`));
+    console.log(c.dim('  请先运行: node scripts/install.js'));
+    return;
+  }
+  fs.mkdirSync(path.dirname(LOG), { recursive: true });
+  console.log(`启动 ${TOOL_NAME}...`);
+  P.startProcess();
+  await new Promise(r => setTimeout(r, 1200));
+  if (await isRunning()) console.log(c.green(`✓ ${TOOL_NAME} 已启动`));
+  else console.log(c.red(`✗ 启动失败，检查日志: ${LOG}`));
+}
+
+// ─── 命令：stop ───────────────────────────────────────────────
+async function cmdStop() {
+  if (!(await isRunning())) { console.log(c.yellow(`⚠ ${TOOL_NAME} 未运行`)); return; }
+  P.stopProcess();
+  await new Promise(r => setTimeout(r, 500));
+  console.log(c.green(`✓ ${TOOL_NAME} 已停止`));
+}
+
+// ─── 命令：restart ────────────────────────────────────────────
+async function cmdRestart() {
+  await cmdStop();
+  await new Promise(r => setTimeout(r, 800));
+  await cmdStart();
+}
+
+// ─── 命令：autostart ──────────────────────────────────────────
+function cmdAutostart(args) {
+  const sub = args[0];
+  if (sub === 'on') {
+    try { P.enableAutostart(); }
+    catch (e) { console.log(c.red(`✗ ${e.message}`)); }
+    return;
+  }
+  if (sub === 'off') {
+    P.disableAutostart();
+    return;
+  }
+  const enabled = P.isAutostartEnabled();
+  console.log(`开机自启: ${enabled ? c.green('已启用') : c.dim('已禁用')}`);
+  console.log(c.dim(`  修改: ${CTL_NAME} autostart on|off`));
+}
+
+// ─── 命令：log ────────────────────────────────────────────────
+function cmdLog() {
+  if (!fs.existsSync(LOG)) { console.log(c.red(`日志文件不存在: ${LOG}`)); return; }
+  run(`tail -n 100 "${LOG}"`);
+  console.log(c.dim(`\n  实时跟踪: tail -f "${LOG}"`));
+}
+
+// ─── 帮助 ─────────────────────────────────────────────────────
+function cmdHelp() {
+  console.log(`
+${c.bold(CTL_NAME)} v${VERSION} — ${TOOL_NAME} 管理工具
+
+${c.bold('基础命令')}
+  ${c.cyan('status')}                    查看运行状态
+  ${c.cyan('start')}                     启动服务
+  ${c.cyan('stop')}                      停止服务
+  ${c.cyan('restart')}                   重启服务
+  ${c.cyan('autostart on|off')}          开机自启管理
+  ${c.cyan('log')}                       查看最近日志
+  ${c.cyan('help')}                      显示帮助
+
+${c.bold('TODO: 补充工具特有命令')}
+`);
+}
+
+// ─── 主入口 ───────────────────────────────────────────────────
+const [cmd, ...args] = process.argv.slice(2);
+
+(async () => {
+  switch (cmd) {
+    case 'status':    await cmdStatus();   break;
+    case 'start':     await cmdStart();    break;
+    case 'stop':      await cmdStop();     break;
+    case 'restart':   await cmdRestart();  break;
+    case 'autostart': cmdAutostart(args);  break;
+    case 'log':       cmdLog();            break;
+    case 'help': case '--help': case '-h': cmdHelp(); break;
+    // TODO: 添加工具特有命令的 case
+    default:
+      if (!cmd) await cmdStatus();
+      else { console.log(c.red(`未知命令: ${cmd}`)); cmdHelp(); }
+  }
+})().catch(e => { console.error(c.red(`✗ ${e.message}`)); process.exit(1); });

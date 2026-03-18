@@ -1,0 +1,17 @@
+#!/bin/sh
+# __TOOL_NAME__ FreeBSD rc.d script
+# PROVIDE: __TOOL_NAME__
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="__TOOL_NAME__"
+rcvar="__TOOL_NAME___enable"
+command="/usr/local/bin/__BIN_NAME__"
+command_args="--config /home/__USER__/.config/__TOOL_NAME__/config.yaml"
+__TOOL_NAME___user="__USER__"
+__TOOL_NAME___enable="${__TOOL_NAME___enable-NO}"
+pidfile="/var/run/__TOOL_NAME__.pid"
+load_rc_config $name
+run_rc_command "$1"
