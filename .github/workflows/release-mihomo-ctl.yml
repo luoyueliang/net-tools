@@ -82,7 +82,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: mihomo
-        run: npm ci
+        run: npm install
 
       - name: Build obfuscated release
         working-directory: mihomo
