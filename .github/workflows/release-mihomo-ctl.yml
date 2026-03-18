@@ -10,6 +10,8 @@ jobs:
   # ── Step 1: 创建 GitHub Release（一次性，先于多平台构建）
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
@@ -51,6 +53,8 @@ jobs:
   # ── Step 2: 多平台构建并上传资产
   build-upload:
     needs: create-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
