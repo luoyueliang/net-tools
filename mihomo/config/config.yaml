@@ -34,6 +34,16 @@ dns:
       - 240.0.0.0/4
       - 0.0.0.0/8
 
+# TUN 透明代理（可选，接管所有 TCP/UDP 流量，适用于不走系统代理的应用，如 Telegram Desktop）
+# 开启: mihomo-ctl tun-on   关闭: mihomo-ctl tun-off   需要以 sudo/root 运行 Mihomo
+tun:
+  enable: false          # mihomo-ctl tun-on 将此改为 true
+  stack: system          # system 栈，macOS/Linux 均支持，无需 gvisor 驱动
+  auto-route: true       # 自动配置路由表（需要 root 权限）
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+
 proxies:
   # 示例 1：VLESS + Reality（推荐主力节点类型）
   - name: "proxy-vless-reality"

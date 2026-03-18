@@ -2,7 +2,7 @@
 // mihomo-ctl - Mihomo 管理工具
 // 用法: mihomo-ctl [status|start|stop|restart|proxies|test|log|help]
 
-const { execSync, exec } = require('child_process');
+const { execSync, exec, spawn } = require('child_process');
 const http = require('http');
 const os   = require('os');
 const path = require('path');
@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.6';
+const VERSION     = '1.4.7';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -36,6 +36,7 @@ const PROXY_BACKUP_FILE  = path.join(TMP, 'mihomo-proxy.backup');
 const PF_CONF            = path.join(TMP, 'mihomo-dns.pf.conf');
 const PF_TOKEN_FILE      = path.join(TMP, 'mihomo-dns.pf.token');
 const DNS_AUTOSTART_FILE = path.join(CONFIG_DIR, '.dns-autostart');
+const TUN_STATE_FILE     = path.join(CONFIG_DIR, '.tun-active');
 
 // ANSI 颜色
 const c = {
@@ -830,7 +831,8 @@ async function cmdStatus() {
   const logStr   = logLevel === 'silent' ? c.dim('日志: 关闭') : c.yellow(`日志: ${logLevel}`);
   const dnsStr   = isDnsManagedByMihomo() ? c.green('DNS: 已接管') : c.dim('DNS: 系统默认');
   const proxyStr = P.isSystemProxyActive() ? c.green('代理: 已接管') : c.dim('代理: 系统默认');
-  console.log(`  模式: ${c.cyan(cfg.mode || '?')}   ${logStr}   ${dnsStr}   ${proxyStr}`);
+  const tunStr   = cfg.tun?.enable === true ? c.green('TUN: 已接管') : c.dim('TUN: 未开启');
+  console.log(`  模式: ${c.cyan(cfg.mode || '?')}   ${logStr}   ${dnsStr}   ${proxyStr}   ${tunStr}`);
 
   // 当前出口节点
   const main = groups?.proxies?.['\u{1F30D} 默认出口'];
@@ -1517,6 +1519,74 @@ async function cmdReload(quiet = false) {
   });
 }
 
+// ─── 命令：tun-on / tun-off ──────────────────────────────────
+function setTunEnable(cfgText, enable) {
+  const tunIdx    = cfgText.indexOf('\ntun:\n');
+  if (tunIdx === -1) return null;
+  const enableIdx = cfgText.indexOf('\n  enable:', tunIdx);
+  if (enableIdx === -1) return null;
+  const lineEnd   = cfgText.indexOf('\n', enableIdx + 1);
+  const line      = cfgText.slice(enableIdx, lineEnd);
+  const newLine   = line.replace(/(enable:\s*)(true|false)/, `$1${enable}`);
+  return cfgText.slice(0, enableIdx) + newLine + cfgText.slice(lineEnd);
+}
+
+async function cmdTunOn() {
+  if (P.name !== 'macos') {
+    console.log(c.yellow('⚠ tun-on 当前仅支持 macOS'));
+    return;
+  }
+  if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
+  const cfgText = fs.readFileSync(CONFIG, 'utf8');
+  const tunIdx  = cfgText.indexOf('\ntun:\n');
+  if (tunIdx === -1) { console.log(c.red('✗ 配置中缺少 tun: 块，请检查 config.yaml')); return; }
+  const enableIdx = cfgText.indexOf('\n  enable:', tunIdx);
+  const lineEnd   = cfgText.indexOf('\n', enableIdx + 1);
+  if (/enable:\s*true/.test(cfgText.slice(enableIdx, lineEnd))) {
+    console.log(c.green('✓ TUN 已处于开启状态')); return;
+  }
+  const newCfg = setTunEnable(cfgText, 'true');
+  fs.writeFileSync(CONFIG, newCfg);
+  console.log(c.bold('\n── 开启 TUN 透明代理 ─────────────────────────────'));
+  run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+  await new Promise(r => setTimeout(r, 600));
+  console.log(c.dim('  以 sudo 启动（TUN auto-route 需 root 权限）...'));
+  spawn('sudo', [BIN, '-d', CONFIG_DIR], { detached: true, stdio: 'ignore' }).unref();
+  await new Promise(r => setTimeout(r, 2000));
+  if (await isRunning()) {
+    fs.writeFileSync(TUN_STATE_FILE, '1');
+    console.log(c.green('✓ TUN 模式已开启（所有 TCP/UDP 流量透明接管）'));
+    console.log(c.dim('  Telegram 等不走系统代理的 App 现在会经过规则路由'));
+    console.log(c.dim('  关闭: mihomo-ctl tun-off'));
+  } else {
+    fs.writeFileSync(CONFIG, cfgText);
+    run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+    console.log(c.red('✗ TUN 模式启动失败（sudo 可能需要密码）'));
+    console.log(c.dim('\n  在 /etc/sudoers 中添加免密授权 (sudo visudo):'));
+    console.log(c.cyan(`    ${os.userInfo().username} ALL=(ALL) NOPASSWD: ${BIN}`));
+    console.log(c.dim('  或手动以 root 运行:'));
+    console.log(c.cyan(`    sudo ${BIN} -d ${CONFIG_DIR}`));
+  }
+}
+
+async function cmdTunOff() {
+  if (P.name !== 'macos') {
+    console.log(c.yellow('⚠ tun-off 当前仅支持 macOS'));
+    return;
+  }
+  let cfgText = fs.readFileSync(CONFIG, 'utf8');
+  const newCfg = setTunEnable(cfgText, 'false');
+  if (newCfg) fs.writeFileSync(CONFIG, newCfg);
+  console.log(c.bold('\n── 关闭 TUN 透明代理 ─────────────────────────────'));
+  run(`sudo pkill -f 'mihomo -d' 2>/dev/null || pkill -f 'mihomo -d' 2>/dev/null || true`);
+  await new Promise(r => setTimeout(r, 600));
+  run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+  await new Promise(r => setTimeout(r, 1500));
+  try { fs.unlinkSync(TUN_STATE_FILE); } catch {}
+  console.log(c.green('✓ TUN 模式已关闭'));
+  console.log(c.dim('  Mihomo 已恢复系统代理 (LaunchAgent) 模式'));
+}
+
 // ─── 命令：mode ────────────────────────────────────────────────
 async function cmdMode(mode) {
   if (!(await isRunning())) { console.log(c.red('Mihomo 未运行')); return; }
@@ -1955,6 +2025,11 @@ ${c.cyan('DNS 防污染（需管理员/sudo，macOS · FreeBSD · Linux · Alpin
   mihomo-ctl dns-on           接管 DNS → Mihomo（macOS/FreeBSD: pf+DoH · Linux/Alpine: iptables · Windows: netsh）
   mihomo-ctl dns-off          恢复系统 DNS
 
+${c.cyan('TUN 透明代理（macOS）')}
+  mihomo-ctl tun-on           开启 TUN 模式（接管所有 TCP/UDP，Telegram 等不走系统代理的 App 也能路由）
+                              需要以 sudo 运行 Mihomo（auto-route 需配置路由表）
+  mihomo-ctl tun-off          关闭 TUN 模式（恢复 LaunchAgent 系统代理模式）
+
 ${c.cyan('终端临时代理（所有平台）')}
   export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890
   unset https_proxy http_proxy
@@ -2003,6 +2078,8 @@ const [,, cmd, ...args] = process.argv;
     case 'dns-on':     await cmdDnsOn();     break;
     case 'dns-off':    await cmdDnsOff();    break;
     case 'dns':        await cmdDnsStatus(); break;
+    case 'tun-on':     await cmdTunOn();     break;
+    case 'tun-off':    await cmdTunOff();    break;
     case 'version': case '-v': case '--version':
       console.log(`mihomo-ctl v${VERSION}`); break;
     case 'help': case '--help': case '-h': cmdHelp(); break;
