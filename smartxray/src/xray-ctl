@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.1.0';
+const VERSION       = '2.2.0';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -304,6 +304,27 @@ function buildConfig() {
     ],
   };
 
+  // 注入上游出站（upstream outbounds）
+  const upstreamJson = getSetting('upstream_outbounds', '');
+  let upstreamOutbounds = [];
+  if (upstreamJson) {
+    try {
+      upstreamOutbounds = JSON.parse(upstreamJson);
+      if (Array.isArray(upstreamOutbounds) && upstreamOutbounds.length) {
+        config.outbounds.push(...upstreamOutbounds);
+        // 若启用上游转发，追加默认路由规则（私有 IP 直连，其余走第一个上游）
+        if (getSetting('use_upstream', '0') === '1') {
+          config.routing.rules.push({
+            type: 'field', network: 'tcp,udp',
+            outboundTag: upstreamOutbounds[0].tag,
+          });
+        }
+      }
+    } catch {
+      // JSON 解析失败时忽略，回退到 direct
+    }
+  }
+
   ensureDir(path.dirname(XRAY_CONF));
   fs.writeFileSync(XRAY_CONF, JSON.stringify(config, null, 2));
   return config;
@@ -390,8 +411,57 @@ function fwOp(action, port) {
   }
 }
 
-function firewallOpen(port)  { fwOp('open',  port); }
-function firewallClose(port) { fwOp('close', port); }
+// ─── 外部防火墙：AWS Lightsail 安全组 ────────────────────────
+function lightsailFw(action, port) {
+  const instance = getSetting('lightsail_instance', '');
+  if (!instance) return;
+  const op = action === 'open' ? 'open-instance-public-ports' : 'close-instance-public-ports';
+  for (const proto of ['TCP', 'UDP']) {
+    run(`aws lightsail ${op} --instance-name "${instance}" --port-info fromPort=${port},toPort=${port},protocol=${proto} 2>/dev/null || true`);
+  }
+}
+
+// ─── 外部防火墙：OpenWrt DNAT 端口转发 ─────────────────────
+function openwrtFw(action, port) {
+  const host    = getSetting('openwrt_host', '');
+  const user    = getSetting('openwrt_user', 'root');
+  const keyPath = getSetting('openwrt_ssh_key', '');
+  const destIp  = getSetting('openwrt_dest_ip', '');
+  if (!host || !destIp) return;
+  const keyOpt = keyPath ? `-i "${keyPath}"` : '';
+  const ssh    = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${keyOpt} "${user}@${host}"`;
+  for (const proto of ['tcp', 'udp']) {
+    const name = `smartxray_${port}_${proto}`;
+    if (action === 'open') {
+      const cmd = [
+        `uci add firewall redirect`,
+        `uci set firewall.@redirect[-1].name='${name}'`,
+        `uci set firewall.@redirect[-1].src='wan'`,
+        `uci set firewall.@redirect[-1].dest='lan'`,
+        `uci set firewall.@redirect[-1].proto='${proto}'`,
+        `uci set firewall.@redirect[-1].src_dport='${port}'`,
+        `uci set firewall.@redirect[-1].dest_ip='${destIp}'`,
+        `uci set firewall.@redirect[-1].dest_port='${port}'`,
+        `uci set firewall.@redirect[-1].target='DNAT'`,
+        `uci commit firewall && /etc/init.d/firewall reload`,
+      ].join(' && ');
+      run(`${ssh} '${cmd}' 2>/dev/null || true`);
+    } else {
+      // 按名称逐索引查找并删除
+      const del = `i=0; while uci get firewall.@redirect[$i] >/dev/null 2>&1; do n=$(uci get firewall.@redirect[$i].name 2>/dev/null); if [ "$n" = "${name}" ]; then uci delete firewall.@redirect[$i] && uci commit firewall && /etc/init.d/firewall reload; break; fi; i=$((i+1)); done`;
+      run(`${ssh} '${del}' 2>/dev/null || true`);
+    }
+  }
+}
+
+function extFwOp(action, port) {
+  const mode = getSetting('extfw_mode', 'none');
+  if (mode === 'lightsail') lightsailFw(action, port);
+  else if (mode === 'openwrt') openwrtFw(action, port);
+}
+
+function firewallOpen(port)  { fwOp('open',  port); extFwOp('open',  port); }
+function firewallClose(port) { fwOp('close', port); extFwOp('close', port); }
 
 // ─── 命令：status ────────────────────────────────────────────
 function cmdStatus() {
@@ -766,6 +836,98 @@ function cmdExport() {
   console.log('\n' + fs.readFileSync(MIHOMO_OUT, 'utf8'));
 }
 
+// ─── 命令：firewall ──────────────────────────────────────────
+function cmdFirewall(args) {
+  const sub  = args[0];
+  const mode = getSetting('extfw_mode', 'none');
+
+  if (!sub) {
+    console.log(c.bold('\n── 外部防火墙配置 ─────────────────────────────'));
+    const modeLabel = mode === 'lightsail' ? c.green('AWS Lightsail') : mode === 'openwrt' ? c.green('OpenWrt') : c.dim('未启用');
+    console.log(`  模式: ${modeLabel}`);
+    if (mode === 'lightsail') {
+      console.log(`  实例名: ${getSetting('lightsail_instance') || c.yellow('⚠ 未设置')}`);
+    } else if (mode === 'openwrt') {
+      console.log(`  路由器: ${getSetting('openwrt_host') || c.yellow('⚠ 未设置')}`);
+      console.log(`  SSH 用户: ${getSetting('openwrt_user', 'root')}`);
+      console.log(`  SSH 密钥: ${getSetting('openwrt_ssh_key') || c.dim('(未设置，按系统默认密钥)')}`);
+      console.log(`  服务器 LAN IP: ${getSetting('openwrt_dest_ip') || c.yellow('⚠ 未设置')}`);
+    }
+    console.log(c.dim('\n  配置命令:'));
+    console.log(c.dim('    xray-ctl firewall lightsail <实例名>'));
+    console.log(c.dim('    xray-ctl firewall openwrt <路由器IP> [ssh用户] [ssh密钥路径] [服务器LAN-IP]'));
+    console.log(c.dim('    xray-ctl firewall off'));
+    console.log(c.dim('    xray-ctl firewall sync    同步所有现有用户端口'));
+    return;
+  }
+
+  if (sub === 'lightsail') {
+    const instance = args[1];
+    if (!instance) { console.log(c.red('用法: xray-ctl firewall lightsail <实例名>')); return; }
+    setSetting('extfw_mode', 'lightsail');
+    setSetting('lightsail_instance', instance);
+    console.log(c.green(`✓ AWS Lightsail 防火墙模式已启用`));
+    console.log(`  实例: ${c.cyan(instance)}`);
+    console.log(c.dim('  新建/删除用户时会自动同步 Lightsail 安全组端口'));
+    return;
+  }
+
+  if (sub === 'openwrt') {
+    const host    = args[1];
+    const user    = args[2] || getSetting('openwrt_user', 'root');
+    const keyPath = args[3] || getSetting('openwrt_ssh_key', '');
+    const destIp  = args[4] || getSetting('openwrt_dest_ip', '');
+    if (!host) { console.log(c.red('用法: xray-ctl firewall openwrt <路由器IP> [ssh用户] [ssh密钥路径] [服务器LAN-IP]')); return; }
+    setSetting('extfw_mode', 'openwrt');
+    setSetting('openwrt_host', host);
+    setSetting('openwrt_user', user);
+    if (keyPath) setSetting('openwrt_ssh_key', keyPath);
+    if (destIp)  setSetting('openwrt_dest_ip', destIp);
+    console.log(c.green('✓ OpenWrt 防火墙模式已启用'));
+    console.log(`  路由器: ${c.cyan(host)}  用户: ${user}  密钥: ${keyPath || '(系统默认)'}`);
+    if (destIp) console.log(`  服务器 LAN IP: ${c.cyan(destIp)}`);
+    else console.log(c.yellow('  ⚠ 未设置服务器 LAN IP，请补充:') + c.dim(` xray-ctl firewall openwrt ${host} ${user} ${keyPath} <LAN-IP>`));
+    return;
+  }
+
+  if (sub === 'off') {
+    setSetting('extfw_mode', 'none');
+    console.log(c.green('✓ 外部防火墙模式已关闭'));
+    return;
+  }
+
+  if (sub === 'sync') {
+    const users   = db().prepare('SELECT * FROM users WHERE enabled=1').all();
+    const reality = getRealityConfig();
+    const syncing = mode === 'lightsail' ? 'Lightsail' : mode === 'openwrt' ? 'OpenWrt' : null;
+    if (!syncing) { console.log(c.yellow('⚠ 未配置外部防火墙，无需同步')); return; }
+    console.log(c.bold(`\n── 同步端口到 ${syncing} ─────────────────────────`));
+    for (const u of users) {
+      extFwOp('open', u.port);
+      if (u.http_port) extFwOp('open', u.http_port);
+      console.log(c.dim(`  ✓ ${u.name}: ${u.port}${u.http_port ? ' + ' + u.http_port : ''}`));
+    }
+    if (reality.enabled) {
+      extFwOp('open', reality.port);
+      console.log(c.dim(`  ✓ Reality: ${reality.port}`));
+    }
+    console.log(c.green(`✓ 端口同步完成（共 ${users.length} 用户）`));
+    return;
+  }
+
+  console.log(c.dim('用法: xray-ctl firewall [lightsail <实例名> | openwrt <IP> [用户] [密钥] [LAN-IP] | off | sync]'));
+}
+
+// ─── 命令：export（导出 mihomo 配置片段）────────────────────
+function cmdExport() {
+  exportMihomoProxies();
+  console.log(c.green(`✓ mihomo proxies 片段已导出 → ${MIHOMO_OUT}`));
+  console.log(c.dim('  在 mihomo config.yaml 末尾添加:'));
+  console.log(c.cyan(`  # !include ${MIHOMO_OUT}`));
+  // 同时打印内容供直接复制
+  console.log('\n' + fs.readFileSync(MIHOMO_OUT, 'utf8'));
+}
+
 // ─── Web UI + HTTP API Server ─────────────────────────────────
 function apiResponse(res, code, data) {
   const body = JSON.stringify(data);
@@ -995,6 +1157,88 @@ function startApiServer() {
         return apiResponse(res, 200, result);
       }
 
+      // ── 防火墙配置 API ────────────────────────────────────────
+      // GET /api/firewall
+      if (method === 'GET' && url === '/api/firewall') {
+        return apiResponse(res, 200, {
+          mode:               getSetting('extfw_mode', 'none'),
+          lightsail_instance: getSetting('lightsail_instance', ''),
+          openwrt_host:       getSetting('openwrt_host', ''),
+          openwrt_user:       getSetting('openwrt_user', 'root'),
+          openwrt_ssh_key:    getSetting('openwrt_ssh_key', ''),
+          openwrt_dest_ip:    getSetting('openwrt_dest_ip', ''),
+        });
+      }
+
+      // POST /api/firewall
+      if (method === 'POST' && url === '/api/firewall') {
+        const fields = ['extfw_mode','lightsail_instance','openwrt_host','openwrt_user','openwrt_ssh_key','openwrt_dest_ip'];
+        for (const f of fields) {
+          if (json[f] !== undefined) setSetting(f, json[f]);
+        }
+        return apiResponse(res, 200, { ok: true });
+      }
+
+      // POST /api/firewall/sync
+      if (method === 'POST' && url === '/api/firewall/sync') {
+        const users   = db().prepare('SELECT * FROM users WHERE enabled=1').all();
+        const reality = getRealityConfig();
+        for (const u of users) {
+          extFwOp('open', u.port);
+          if (u.http_port) extFwOp('open', u.http_port);
+        }
+        if (reality.enabled) extFwOp('open', reality.port);
+        return apiResponse(res, 200, { ok: true, synced: users.length });
+      }
+
+      // ── 设置 API (覆盖原来的只读 status 获取) ────────────────
+      // GET /api/settings
+      if (method === 'GET' && url === '/api/settings') {
+        return apiResponse(res, 200, {
+          server_ip:          getSetting('server_ip', ''),
+          log_level:          getSetting('log_level', 'warning'),
+          upstream_outbounds: getSetting('upstream_outbounds', ''),
+          use_upstream:       getSetting('use_upstream', '0') === '1',
+        });
+      }
+
+      // POST /api/settings
+      if (method === 'POST' && url === '/api/settings') {
+        if (json.server_ip   !== undefined) setSetting('server_ip', json.server_ip);
+        if (json.log_level   !== undefined) setSetting('log_level', json.log_level);
+        if (json.use_upstream !== undefined) setSetting('use_upstream', json.use_upstream ? '1' : '0');
+        if (json.upstream_outbounds !== undefined) {
+          if (json.upstream_outbounds) {
+            try { JSON.parse(json.upstream_outbounds); }
+            catch (e) { return apiResponse(res, 400, { error: 'upstream_outbounds JSON 格式错误: ' + e.message }); }
+          }
+          setSetting('upstream_outbounds', json.upstream_outbounds);
+        }
+        cmdReload();
+        return apiResponse(res, 200, { ok: true });
+      }
+
+      // ── 原始配置 API ──────────────────────────────────────────
+      // GET /api/config/raw
+      if (method === 'GET' && url === '/api/config/raw') {
+        const content = fs.existsSync(XRAY_CONF) ? fs.readFileSync(XRAY_CONF, 'utf8') : '{}';
+        return apiResponse(res, 200, { content });
+      }
+
+      // POST /api/config/raw
+      if (method === 'POST' && url === '/api/config/raw') {
+        const content = json.content;
+        if (!content) return apiResponse(res, 400, { error: '缺少 content 字段' });
+        try {
+          JSON.parse(content);  // 验证 JSON 格式
+          fs.writeFileSync(XRAY_CONF, content);
+          cmdReload();
+          return apiResponse(res, 200, { ok: true });
+        } catch (e) {
+          return apiResponse(res, 400, { error: 'JSON 格式错误: ' + e.message });
+        }
+      }
+
       res.writeHead(404); res.end();
     });
   });
@@ -1119,6 +1363,13 @@ ${c.bold('配置')}
   xray-ctl config server_ip <IP>
   xray-ctl config log_level debug|info|warning|error|none
 
+${c.bold('防火墙自动同步')}
+  xray-ctl firewall                       查看当前模式
+  xray-ctl firewall lightsail <实例名>    启用 AWS Lightsail 安全组同步
+  xray-ctl firewall openwrt <IP> [用户] [SSH密钥] [LAN-IP]  启用 OpenWrt DNAT 同步
+  xray-ctl firewall off                   关闭外部防火墙同步
+  xray-ctl firewall sync                  同步所有已有用户端口
+
 ${c.bold('导出')}
   xray-ctl export             导出 mihomo proxies 片段 → ${MIHOMO_OUT}
 
@@ -1147,6 +1398,7 @@ const [,, cmd, ...args] = process.argv;
     case 'reality':     cmdReality(args); break;
     case 'selfservice': cmdSelfservice(args); break;
     case 'config':      cmdConfig(args); break;
+    case 'firewall':    cmdFirewall(args); break;
     case 'export':      cmdExport(); break;
     case 'ui':          startApiServer(); console.log(c.green(`✓ Web UI 已启动 → http://127.0.0.1:${API_PORT}/`)); break;
     case 'help': case '--help': case '-h': printHelp(); break;

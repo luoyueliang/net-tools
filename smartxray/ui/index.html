@@ -97,6 +97,8 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
     <a class="active" data-page="overview" onclick="showPage('overview',this)"><span class="ico">◉</span>概览</a>
     <a data-page="users" onclick="showPage('users',this)"><span class="ico">👤</span>用户管理</a>
     <a data-page="export" onclick="showPage('export',this)"><span class="ico">⬇</span>导出配置</a>
+    <a data-page="firewall" onclick="showPage('firewall',this)"><span class="ico">🔥</span>防火墙</a>
+    <a data-page="configeditor" onclick="showPage('configeditor',this)"><span class="ico">📝</span>配置编辑</a>
     <a data-page="settings" onclick="showPage('settings',this)"><span class="ico">⚙</span>设置</a>
   </nav>
 </aside>
@@ -195,6 +197,143 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
   </div>
 </div>
 
+<!-- ── 防火墙 ── -->
+<div class="page" id="page-firewall">
+  <div class="card">
+    <div class="card-header">外部防火墙自动同步</div>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:1/-1">
+        <label>模式</label>
+        <select id="fw-mode" onchange="onFwModeChange()">
+          <option value="none">未启用</option>
+          <option value="lightsail">AWS Lightsail 安全组</option>
+          <option value="openwrt">OpenWrt DNAT 转发</option>
+        </select>
+        <span style="font-size:12px;color:#718096;margin-top:4px">启用后添加/删除用户时会自动同步对应防火墙端口</span>
+      </div>
+    </div>
+    <!-- Lightsail 字段 -->
+    <div id="fw-lightsail" style="display:none">
+      <div class="form-grid">
+        <div class="form-group" style="grid-column:1/-1">
+          <label>Lightsail 实例名（instance name）</label>
+          <input id="fw-lightsail-instance" placeholder="如 my-vps-sg，可用 aws lightsail get-instances 查询">
+        </div>
+      </div>
+      <div style="padding:0 20px 12px;font-size:12px;color:#718096">
+        需要 VPS 上已安装 <code style="background:#171923;padding:1px 5px;border-radius:3px">aws-cli</code> 并配置好凭证
+      </div>
+    </div>
+    <!-- OpenWrt 字段 -->
+    <div id="fw-openwrt" style="display:none">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>OpenWrt 路由器 IP</label>
+          <input id="fw-openwrt-host" placeholder="192.168.0.1">
+        </div>
+        <div class="form-group">
+          <label>SSH 用户</label>
+          <input id="fw-openwrt-user" placeholder="root">
+        </div>
+        <div class="form-group">
+          <label>SSH 密钥路径（选填）</label>
+          <input id="fw-openwrt-key" placeholder="~/.ssh/id_rsa">
+        </div>
+        <div class="form-group">
+          <label>本机内网 IP（DNAT 目标，如 192.168.0.32）</label>
+          <input id="fw-openwrt-dest" placeholder="192.168.0.32">
+        </div>
+      </div>
+      <div style="padding:0 20px 12px;font-size:12px;color:#718096">
+        内网提供服务时，新建用户端口会自动在 OpenWrt 上添加 DNAT 跳转规则供外网访问
+      </div>
+    </div>
+    <div class="form-footer">
+      <button class="btn btn-primary" onclick="saveFirewall()">💾 保存</button>
+      <button class="btn btn-gray" onclick="syncFirewall()">⟳ 同步全部端口</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 配置编辑器 ── -->
+<div class="page" id="page-configeditor">
+  <!-- 标签栏 -->
+  <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid #2d3748">
+    <button id="tab-form-btn" class="btn btn-primary" style="border-radius:6px 6px 0 0;margin-bottom:-1px" onclick="switchCfgTab('form')">表单式</button>
+    <button id="tab-json-btn" class="btn btn-gray" style="border-radius:6px 6px 0 0;margin-bottom:-1px;margin-left:4px" onclick="switchCfgTab('json')">JSON 原文</button>
+  </div>
+
+  <!-- 表单 Tab -->
+  <div id="cfg-tab-form">
+    <div class="card">
+      <div class="card-header">下游入站配置（Inbound）</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>server_ip（公布给客户端的服务器 IP）</label>
+          <input id="ceditor-server-ip" placeholder="1.2.3.4">
+        </div>
+        <div class="form-group">
+          <label>log_level</label>
+          <select id="ceditor-log-level">
+            <option>warning</option><option>info</option><option>debug</option><option>error</option><option>none</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        上游出站（Upstream Outbounds）
+        <div class="actions">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="ceditor-use-upstream" onchange="toggleUpstreamHint()">
+            启用上游转发
+          </label>
+        </div>
+      </div>
+      <div style="padding:16px 20px">
+        <p style="font-size:12px;color:#718096;margin-bottom:10px">
+          填入 Xray outbounds 配置数组 JSON。开启"启用上游转发"后，默认路由将走第一个 outbound。
+          <span id="upstream-hint-on" style="color:#68d391;display:none">✓ 已启用，所有出站流量通过第一个 outbound 转发。</span>
+        </p>
+        <textarea id="ceditor-upstream" rows="14" placeholder='[
+  {
+    "tag": "proxy-sg",
+    "protocol": "vmess",
+    "settings": {
+      "vnext": [{ "address": "10.x.x.x", "port": 1082,
+        "users": [{ "id": "YOUR-UUID", "alterId": 0, "security": "auto" }] }]
+    },
+    "streamSettings": { "network": "ws", "wsSettings": { "path": "/" } }
+  }
+]' style="width:100%;background:#171923;border:1px solid #2d3748;border-radius:6px;padding:12px;color:#a0aec0;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+      </div>
+      <div class="form-footer">
+        <button class="btn btn-primary" onclick="saveFormConfig()">💾 保存并重载</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JSON Tab -->
+  <div id="cfg-tab-json" style="display:none">
+    <div class="card">
+      <div class="card-header">
+        完整 config.json
+        <div class="actions">
+          <button class="btn btn-gray btn-sm" onclick="loadRawConfig()">⟳ 刷新</button>
+          <button class="btn btn-primary btn-sm" onclick="saveRawConfig()">💾 保存</button>
+        </div>
+      </div>
+      <div style="padding:16px 20px">
+        <p style="font-size:12px;color:#718096;margin-bottom:10px">
+          直接编辑生效的 xray config.json。保存后自动调用 SIGUSR1 热重载。<br>
+          <span style="color:#fc8181">⚠ 此内容由 Xray 直接加载，格式错误会导致 Xray 无法启动。</span>
+        </p>
+        <textarea id="raw-config-editor" rows="30" style="width:100%;background:#171923;border:1px solid #2d3748;border-radius:6px;padding:12px;color:#a0aec0;font-family:monospace;font-size:12px;resize:vertical"></textarea>
+      </div>
+    </div>
+  </div>
+</div>
+
 </main>
 
 <!-- ── 添加用户 Modal ── -->
@@ -253,6 +392,8 @@ function showPage(name, el) {
   if (name === 'users')    loadUsers();
   if (name === 'export')   loadExport();
   if (name === 'settings') loadSettings();
+  if (name === 'firewall')      loadFirewall();
+  if (name === 'configeditor')  { loadFormConfig(); }
 }
 
 // ── 概览 ─────────────────────────────────────────────────────
@@ -360,18 +501,107 @@ function copyExport() {
 
 // ── 设置 ─────────────────────────────────────────────────────
 async function loadSettings() {
-  const d = await apiFetch('GET', '/api/status');
-  if (d.config) {
-    document.getElementById('cfg-server_ip').value = d.config.server_ip || '';
-    document.getElementById('cfg-log_level').value  = d.config.log_level || 'warning';
-  }
+  const d = await apiFetch('GET', '/api/settings');
+  document.getElementById('cfg-server_ip').value = d.server_ip || '';
+  document.getElementById('cfg-log_level').value  = d.log_level || 'warning';
 }
 
 async function saveSettings() {
-  // settings 通过 xray-ctl config 命令设置，这里直接调用 reload 并提示
-  // 实际上 API server 无独立 setting endpoint，通过 CLI 设置后 reload 生效
-  toast('设置已保存（请通过 xray-ctl config 命令修改服务端设置）', true);
-  await apiFetch('POST', '/api/reload');
+  const r = await apiFetch('POST', '/api/settings', {
+    server_ip:  document.getElementById('cfg-server_ip').value.trim(),
+    log_level:  document.getElementById('cfg-log_level').value,
+  });
+  if (r.error) { toast('保存失败: ' + r.error, false); return; }
+  toast('设置已保存并重载');
+}
+
+// ── 防火墙 ────────────────────────────────────────────────────
+async function loadFirewall() {
+  const d = await apiFetch('GET', '/api/firewall');
+  document.getElementById('fw-mode').value = d.mode || 'none';
+  document.getElementById('fw-lightsail-instance').value = d.lightsail_instance || '';
+  document.getElementById('fw-openwrt-host').value = d.openwrt_host || '';
+  document.getElementById('fw-openwrt-user').value = d.openwrt_user || 'root';
+  document.getElementById('fw-openwrt-key').value  = d.openwrt_ssh_key || '';
+  document.getElementById('fw-openwrt-dest').value = d.openwrt_dest_ip || '';
+  onFwModeChange();
+}
+
+function onFwModeChange() {
+  const m = document.getElementById('fw-mode').value;
+  document.getElementById('fw-lightsail').style.display = m === 'lightsail' ? '' : 'none';
+  document.getElementById('fw-openwrt').style.display   = m === 'openwrt'   ? '' : 'none';
+}
+
+async function saveFirewall() {
+  const mode = document.getElementById('fw-mode').value;
+  const payload = {
+    extfw_mode:         mode,
+    lightsail_instance: document.getElementById('fw-lightsail-instance').value.trim(),
+    openwrt_host:       document.getElementById('fw-openwrt-host').value.trim(),
+    openwrt_user:       document.getElementById('fw-openwrt-user').value.trim() || 'root',
+    openwrt_ssh_key:    document.getElementById('fw-openwrt-key').value.trim(),
+    openwrt_dest_ip:    document.getElementById('fw-openwrt-dest').value.trim(),
+  };
+  const r = await apiFetch('POST', '/api/firewall', payload);
+  if (r.error) { toast('保存失败: ' + r.error, false); return; }
+  toast('防火墙配置已保存');
+}
+
+async function syncFirewall() {
+  const r = await apiFetch('POST', '/api/firewall/sync');
+  if (r.error) { toast('同步失败: ' + r.error, false); return; }
+  toast(`端口同步完成（${r.synced || 0} 个用户）`);
+}
+
+// ── 配置编辑器 ────────────────────────────────────────────────
+function switchCfgTab(tab) {
+  document.getElementById('cfg-tab-form').style.display = tab === 'form' ? '' : 'none';
+  document.getElementById('cfg-tab-json').style.display = tab === 'json' ? '' : 'none';
+  document.getElementById('tab-form-btn').className = 'btn btn-sm ' + (tab === 'form' ? 'btn-primary' : 'btn-gray');
+  document.getElementById('tab-json-btn').className = 'btn btn-sm ' + (tab === 'json' ? 'btn-primary' : 'btn-gray');
+  if (tab === 'json') loadRawConfig();
+}
+
+async function loadFormConfig() {
+  const d = await apiFetch('GET', '/api/settings');
+  document.getElementById('ceditor-server-ip').value   = d.server_ip || '';
+  document.getElementById('ceditor-log-level').value   = d.log_level || 'warning';
+  document.getElementById('ceditor-upstream').value    = d.upstream_outbounds || '';
+  document.getElementById('ceditor-use-upstream').checked = !!d.use_upstream;
+  toggleUpstreamHint();
+}
+
+function toggleUpstreamHint() {
+  const on = document.getElementById('ceditor-use-upstream').checked;
+  document.getElementById('upstream-hint-on').style.display = on ? '' : 'none';
+}
+
+async function saveFormConfig() {
+  const upstream = document.getElementById('ceditor-upstream').value.trim();
+  if (upstream) {
+    try { JSON.parse(upstream); } catch (e) { toast('upstream_outbounds JSON 格式错误: ' + e.message, false); return; }
+  }
+  const r = await apiFetch('POST', '/api/settings', {
+    server_ip:          document.getElementById('ceditor-server-ip').value.trim(),
+    log_level:          document.getElementById('ceditor-log-level').value,
+    upstream_outbounds: upstream,
+    use_upstream:       document.getElementById('ceditor-use-upstream').checked,
+  });
+  if (r.error) { toast('保存失败: ' + r.error, false); return; }
+  toast('配置已保存并重载');
+}
+
+async function loadRawConfig() {
+  const d = await apiFetch('GET', '/api/config/raw');
+  document.getElementById('raw-config-editor').value = d.content || '';
+}
+
+async function saveRawConfig() {
+  const content = document.getElementById('raw-config-editor').value;
+  const r = await apiFetch('POST', '/api/config/raw', { content });
+  if (r.error) { toast('保存失败: ' + r.error, false); return; }
+  toast('config.json 已保存并热重载');
 }
 
 // ── 工具 ─────────────────────────────────────────────────────
