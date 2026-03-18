@@ -48,7 +48,9 @@ jobs:
           printf '> 需已安装 Node.js v16+（目标机器运行时依赖）\n'      >> /tmp/notes.md
           gh release create "${TAG}" \
             --title "mihomo-ctl v${VER}" \
-            --notes-file /tmp/notes.md
+            --notes-file /tmp/notes.md \
+            --repo luoyueliang/net-tools || \
+            echo "Release already exists, will upload assets to existing release"
 
   # ── Step 2: 多平台构建并上传资产
   build-upload:
