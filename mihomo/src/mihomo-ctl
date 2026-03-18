@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.10';
+const VERSION     = '1.4.11';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -1546,8 +1546,8 @@ function setTunEnable(cfgText, enable) {
 }
 
 async function cmdTunOn() {
-  if (P.name !== 'macos') {
-    console.log(c.yellow('⚠ tun-on 当前仅支持 macOS'));
+  if (P.name === 'windows') {
+    console.log(c.yellow('⚠ tun-on 当前不支持 Windows 平台'));
     return;
   }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
@@ -1565,9 +1565,13 @@ async function cmdTunOn() {
   const newCfg = setTunEnable(cfgText, 'true');
   fs.writeFileSync(CONFIG, newCfg);
   console.log(c.bold('\n── 开启 TUN 透明代理 ─────────────────────────────'));
-  // 先杀掉所有旧进程（launchctl unload 仅对 LaunchAgent 有效，手动启动的进程需显式 kill）
-  run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
-  run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+  // 先停止旧进程：macOS 额外 unload LaunchAgent，Linux/Alpine 先 stop 服务
+  if (P.name === 'macos') {
+    run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+  } else {
+    P.stopProcess();
+  }
+  P.forceKill();
   await new Promise(r => setTimeout(r, 1200));
   console.log(c.dim('  以 sudo 启动（TUN auto-route 需 root 权限）...'));
   spawn('sudo', [BIN, '-d', CONFIG_DIR], { detached: true, stdio: 'ignore' }).unref();
@@ -1590,18 +1594,32 @@ async function cmdTunOn() {
 }
 
 async function cmdTunOff() {
-  if (P.name !== 'macos') {
-    console.log(c.yellow('⚠ tun-off 当前仅支持 macOS'));
+  if (P.name === 'windows') {
+    console.log(c.yellow('⚠ tun-off 当前不支持 Windows 平台'));
     return;
   }
   let cfgText = fs.readFileSync(CONFIG, 'utf8');
   const newCfg = setTunEnable(cfgText, 'false');
   if (newCfg) fs.writeFileSync(CONFIG, newCfg);
-  console.log(c.bold('\n\u2500\u2500 \u5173\u95ed TUN \u900f\u660e\u4ee3\u7406 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'));
+  console.log(c.bold('\n── 关闭 TUN 透明代理 ─────────────────────────────────────────────────────────'));
+  // 杀掉 root TUN 进程（sudo pkill 覆盖 root 进程，普通 pkill 覆盖非 root 进程）
   run(`sudo pkill -f 'mihomo -d' 2>/dev/null || pkill -f 'mihomo -d' 2>/dev/null || true`);
   try { fs.unlinkSync(TUN_STATE_FILE); } catch {}
-  console.log(c.green('✓ TUN 模式已关闭'));
-  console.log(c.yellow('  请等待约 10 秒后运行: mihomo-ctl start'));
+  if (P.name === 'macos') {
+    // macOS：startProcess 异步不可靠，提示用户手动 start
+    console.log(c.green('✓ TUN 模式已关闭'));
+    console.log(c.yellow('  请等待约 10 秒后运行: mihomo-ctl start'));
+  } else {
+    // Linux/Alpine：P.startProcess() 同步（systemctl/rc-service），可立即验证
+    P.startProcess();
+    await new Promise(r => setTimeout(r, 1000));
+    if (await isRunning()) {
+      console.log(c.green('✓ TUN 模式已关闭'));
+      console.log(c.dim('  Mihomo 已恢复普通模式（系统代理）'));
+    } else {
+      console.log(c.yellow('⚠ TUN 已关闭，请手动启动: mihomo-ctl start'));
+    }
+  }
 }
 
 // ─── 命令：mode ────────────────────────────────────────────────
