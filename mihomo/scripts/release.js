@@ -41,8 +41,8 @@ const VERSION = readVersion();
 // ── 平台（当前构建机） ─────────────────────────────────────────────────────────
 const platMap = { darwin: 'darwin', linux: 'linux', freebsd: 'linux' };
 const archMap = { arm64: 'arm64', x64: 'x64' };
-const PLAT = platMap[os.platform()] || 'linux';
-const ARCH = archMap[os.arch()] || os.arch();
+const PLAT = process.env.TARGET_PLAT || platMap[os.platform()] || 'linux';
+const ARCH = process.env.TARGET_ARCH || archMap[os.arch()] || os.arch();
 
 // ── 包名工具函数 ───────────────────────────────────────────────────────────────
 // 格式: mihomo-ctl-{ver}-{platform}-{arch}.gz

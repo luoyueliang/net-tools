@@ -93,7 +93,7 @@ jobs:
           - os: macos-latest
             platform: darwin
             arch: arm64
-          - os: macos-13
+          - os: macos-latest
             platform: darwin
             arch: x64
 
@@ -111,6 +111,9 @@ jobs:
 
       - name: Build obfuscated release
         working-directory: mihomo
+        env:
+          TARGET_PLAT: ${{ matrix.platform }}
+          TARGET_ARCH: ${{ matrix.arch }}
         run: node scripts/release.js
 
       - name: Verify asset exists
