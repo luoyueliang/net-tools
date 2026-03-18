@@ -63,7 +63,7 @@ jobs:
           npm install
           node scripts/release.js
 
-      - name: Upload installer to Release
+      - name: Upload all assets to Release
         working-directory: mihomo
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,70 +72,9 @@ jobs:
           VER="${{ steps.tag.outputs.version }}"
           gh release upload "${TAG}" \
             "dist/mihomo-ctl-installer-${VER}.tar.gz" \
-            --clobber \
-            --repo luoyueliang/net-tools
-
-  # ── Step 2: 多平台构建并上传资产
-  build-upload:
-    needs: create-release
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-            arch: x64
-          - os: ubuntu-24.04-arm
-            platform: linux
-            arch: arm64
-          - os: macos-latest
-            platform: darwin
-            arch: arm64
-          - os: macos-latest
-            platform: darwin
-            arch: x64
-
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install dependencies
-        working-directory: mihomo
-        run: npm install
-
-      - name: Build obfuscated release
-        working-directory: mihomo
-        env:
-          TARGET_PLAT: ${{ matrix.platform }}
-          TARGET_ARCH: ${{ matrix.arch }}
-        run: node scripts/release.js
-
-      - name: Verify asset exists
-        working-directory: mihomo
-        run: |
-          VER="${{ needs.create-release.outputs.version }}"
-          ASSET="dist/mihomo-ctl-${VER}-${{ matrix.platform }}-${{ matrix.arch }}.gz"
-          if [ ! -f "${ASSET}" ]; then
-            echo "ERROR: Expected asset not found: ${ASSET}"
-            ls -la dist/
-            exit 1
-          fi
-          echo "Asset ready: ${ASSET} ($(du -sh "${ASSET}" | cut -f1))"
-
-      - name: Upload asset to Release
-        working-directory: mihomo
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ needs.create-release.outputs.tag }}"
-          VER="${{ needs.create-release.outputs.version }}"
-          gh release upload "${TAG}" \
-            "dist/mihomo-ctl-${VER}-${{ matrix.platform }}-${{ matrix.arch }}.gz" \
+            "dist/mihomo-ctl-${VER}-darwin-arm64.gz" \
+            "dist/mihomo-ctl-${VER}-darwin-x64.gz" \
+            "dist/mihomo-ctl-${VER}-linux-x64.gz" \
+            "dist/mihomo-ctl-${VER}-linux-arm64.gz" \
             --clobber \
             --repo luoyueliang/net-tools

@@ -162,6 +162,17 @@ const rawKB = (fs.statSync(RAW_FILE).size / 1024).toFixed(0);
 const gzKB  = (gzipped.length / 1024).toFixed(0);
 ok(`${path.basename(GZ_FILE)}  (${rawKB} KB \u2192 ${gzKB} KB gz)`);
 
+// 纯 JS 脚本，内容与平台无关——复制出所有平台的 gz（文件名不同，内容相同）
+const ALL_TARGETS = [
+  ['darwin', 'arm64'], ['darwin', 'x64'],
+  ['linux',  'x64'],   ['linux',  'arm64'],
+];
+for (const [p, a] of ALL_TARGETS) {
+  const f = path.join(distDir, assetName(VERSION, p, a));
+  if (f !== GZ_FILE) { fs.copyFileSync(GZ_FILE, f); }
+}
+ok(`已生成全部 4 个平台 gz（内容相同）`);
+
 // ── Step 6: installer tar.gz（完整目录结构，含所有平台 plist/service + config 模板）──
 // 结构与仓库 mihomo/ 目录一致，解压后直接 node scripts/install.js 即可
 // 包含: scripts/（install.js + platform/**）、src/mihomo-ctl（混淆版）、config/
