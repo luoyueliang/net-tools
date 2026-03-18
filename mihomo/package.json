@@ -1,10 +1,11 @@
 {
   "name": "mihomo-ctl",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Mihomo (Clash.Meta) server management tool",
   "scripts": {
     "pack": "node scripts/release.js",
-    "release": "node scripts/release.js"
+    "release": "node scripts/release.js",
+    "publish": "node scripts/release.js --publish"
   },
   "devDependencies": {
     "javascript-obfuscator": "^4.1.1"

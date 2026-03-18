@@ -1,26 +1,35 @@
 #!/usr/bin/env node
 // release.js — 混淆打包 mihomo-ctl 为单文件发行版
-// 用法: node scripts/release.js  /  npm run pack
-// 输出: dist/mihomo-ctl（混淆 JS，目标机器已有 node，~200-400 KB）
+// 用法:
+//   node scripts/release.js              本地构建（生成 dist/*.gz）
+//   node scripts/release.js --publish    构建 + 发布到 GitHub Release（需 gh CLI 已登录）
+//
+// 输出: dist/mihomo-ctl-{ver}-{platform}-{arch}.gz
+// 平台: darwin-arm64 | darwin-x64 | linux-x64 | linux-arm64
 //
 // 依赖: javascript-obfuscator（npm install 自动安装）
 // 步骤:
 //   1. 把 ui/index.html base64 内联到 JS，消除对源码目录的依赖
 //   2. javascript-obfuscator: 字符串数组 base64 编码 + hex 变量名混淆
-//   3. 输出 dist/mihomo-ctl，保留 shebang，chmod +x 直接可用
+//   3. 输出 dist/mihomo-ctl（源文件），再 gzip 为带平台版本的发行包
 
 'use strict';
 
 const JavaScriptObfuscator = require('javascript-obfuscator');
+const { execSync } = require('child_process');
+const zlib = require('zlib');
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 
 // ── 路径 ──────────────────────────────────────────────────────────────────────
 const rootDir  = path.join(__dirname, '..');
 const srcFile  = path.join(rootDir, 'src', 'mihomo-ctl');
 const htmlFile = path.join(rootDir, 'ui', 'index.html');
 const distDir  = path.join(rootDir, 'dist');
-const outFile  = path.join(distDir, 'mihomo-ctl');
+
+// ── CLI 参数 ──────────────────────────────────────────────────────────────────
+const PUBLISH = process.argv.includes('--publish');
 
 // ── 版本号 ────────────────────────────────────────────────────────────────────
 function readVersion() {
@@ -28,6 +37,20 @@ function readVersion() {
   return m ? m[1] : '0.0.0';
 }
 const VERSION = readVersion();
+
+// ── 平台（当前构建机） ─────────────────────────────────────────────────────────
+const platMap = { darwin: 'darwin', linux: 'linux', freebsd: 'linux' };
+const archMap = { arm64: 'arm64', x64: 'x64' };
+const PLAT = platMap[os.platform()] || 'linux';
+const ARCH = archMap[os.arch()] || os.arch();
+
+// ── 包名工具函数 ───────────────────────────────────────────────────────────────
+// 格式: mihomo-ctl-{ver}-{platform}-{arch}.gz
+function assetName(ver, plat, arch) {
+  return `mihomo-ctl-${ver}-${plat}-${arch}.gz`;
+}
+const GZ_FILE = path.join(distDir, assetName(VERSION, PLAT, ARCH));
+const RAW_FILE = path.join(distDir, 'mihomo-ctl');  // 未 gzip 的中间文件
 
 // ── 颜色 ─────────────────────────────────────────────────────────────────────
 const c = {
@@ -43,7 +66,7 @@ const warn = m => console.log(`${c.y('[warn]')}  ${m}`);
 const die  = m => { console.error(`${c.r('[err]')}   ${m}`); process.exit(1); };
 
 console.log();
-console.log(c.bold(`mihomo-ctl v${VERSION} — 混淆打包`));
+console.log(c.bold(`mihomo-ctl v${VERSION} — 混淆打包  [${PLAT}-${ARCH}]`));
 console.log('─'.repeat(52));
 
 // ── Step 1: 读源码 ────────────────────────────────────────────────────────────
@@ -123,22 +146,79 @@ try {
 }
 ok('\u6df7\u6dc6\u5b8c\u6210');
 
-// ── Step 4: 写输出 ────────────────────────────────────────────────────────────
+// ── Step 4: 写 dist/mihomo-ctl（原始混淆文件）────────────────────────────────
 fs.mkdirSync(distDir, { recursive: true });
-if (fs.existsSync(outFile)) fs.rmSync(outFile, { force: true });
-fs.writeFileSync(outFile, obfuscated, 'utf8');
-fs.chmodSync(outFile, 0o755);
+if (fs.existsSync(RAW_FILE)) fs.rmSync(RAW_FILE, { force: true });
+fs.writeFileSync(RAW_FILE, obfuscated, 'utf8');
+fs.chmodSync(RAW_FILE, 0o755);
 
-// ── Step 5: manifest ──────────────────────────────────────────────────────────
-const sizeKB = (fs.statSync(outFile).size / 1024).toFixed(0);
-fs.writeFileSync(
-  path.join(distDir, 'manifest.json'),
-  JSON.stringify({ version: VERSION, built_at: new Date().toISOString(), files: ['mihomo-ctl'] }, null, 2) + '\n'
-);
+// ── Step 5: gzip → dist/mihomo-ctl-{ver}-{platform}-{arch}.gz ────────────────
+log(`\u6253\u5305 ${path.basename(GZ_FILE)}...`);
+if (fs.existsSync(GZ_FILE)) fs.rmSync(GZ_FILE, { force: true });
+const gzipped = zlib.gzipSync(fs.readFileSync(RAW_FILE), { level: 9 });
+fs.writeFileSync(GZ_FILE, gzipped);
+
+const rawKB = (fs.statSync(RAW_FILE).size / 1024).toFixed(0);
+const gzKB  = (gzipped.length / 1024).toFixed(0);
+ok(`${path.basename(GZ_FILE)}  (${rawKB} KB \u2192 ${gzKB} KB gz)`);
+
+// ── Step 6: manifest ──────────────────────────────────────────────────────────
+const manifest = {
+  version:  VERSION,
+  built_at: new Date().toISOString(),
+  asset:    path.basename(GZ_FILE),
+  platform: PLAT,
+  arch:     ARCH,
+};
+fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+
+// ── Step 7: 可选发布到 GitHub Release ─────────────────────────────────────────
+if (PUBLISH) {
+  console.log();
+  log('发布到 GitHub Release...');
+  const tag = `mihomo-ctl-v${VERSION}`;
+  const title = `mihomo-ctl v${VERSION}`;
+  const notes = [
+    `## mihomo-ctl v${VERSION}`,
+    '',
+    '### 安装',
+    '```bash',
+    `# macOS arm64`,
+    `curl -L https://github.com/luoyueliang/net-tools/releases/download/${tag}/mihomo-ctl-${VERSION}-darwin-arm64.gz | gunzip > mihomo-ctl && chmod +x mihomo-ctl && sudo mv mihomo-ctl /usr/local/bin/`,
+    '```',
+    '',
+    '> 其余平台包见附件列表',
+  ].join('\n');
+
+  // 检查 gh CLI
+  try { execSync('gh --version', { stdio: 'pipe' }); }
+  catch { die('gh CLI 未安装，请先安装 GitHub CLI: https://cli.github.com'); }
+
+  // 创建 Release（已存在则忽略错误，继续上传）
+  try {
+    execSync(`gh release create "${tag}" --title "${title}" --notes '${notes.replace(/'/g, "'\\''")}' --repo luoyueliang/net-tools`, { stdio: 'pipe' });
+    ok(`Release ${tag} 已创建`);
+  } catch (e) {
+    if (e.message && e.message.includes('already exists')) {
+      warn(`Release ${tag} 已存在，直接上传资产`);
+    } else {
+      die(`创建 Release 失败: ${e.message}`);
+    }
+  }
+
+  // 上传资产
+  execSync(`gh release upload "${tag}" "${GZ_FILE}" --clobber --repo luoyueliang/net-tools`, { stdio: 'inherit' });
+  ok(`已上传: ${path.basename(GZ_FILE)}`);
+}
 
 // ── 完成 ──────────────────────────────────────────────────────────────────────
-console.log('\u2500'.repeat(52));
-ok(`dist/mihomo-ctl  (${sizeKB} KB)  \u2014 \u9700\u8981\u76ee\u6807\u673a\u5668\u5df2\u5b89\u88c5 node`);
 console.log();
-console.log(`\u9a8c\u8bc1: ${c.b('./dist/mihomo-ctl help')}`);
-console.log(`\u5b89\u88c5: ${c.b('sudo cp dist/mihomo-ctl /usr/local/bin/')}`);
+console.log('\u2500'.repeat(52));
+ok(`dist/${path.basename(GZ_FILE)}  (${gzKB} KB gz)`);
+if (!PUBLISH) {
+  console.log(c.y(`\u53d1\u5e03: node scripts/release.js --publish`));
+  console.log(c.b(`\u6216\u7531 GitHub Actions \u5728 tag push \u540e\u81ea\u52a8\u6784\u5efa`));
+}
+console.log();
+console.log(`\u672c\u5730\u9a8c\u8bc1: ${c.b(`gunzip -c dist/${path.basename(GZ_FILE)} > /tmp/m && chmod +x /tmp/m && /tmp/m version`)}`);
+

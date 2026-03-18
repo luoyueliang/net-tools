@@ -1,0 +1,124 @@
+name: Release mihomo-ctl
+
+# 触发：推送 mihomo-ctl-vX.Y.Z 格式 tag
+on:
+  push:
+    tags:
+      - 'mihomo-ctl-v*'
+
+jobs:
+  # ── Step 1: 创建 GitHub Release（一次性、先于多平台构建）────────────────
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"           # e.g. mihomo-ctl-v1.4.3
+          VER="${TAG#mihomo-ctl-v}"          # e.g. 1.4.3
+          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VER="${{ steps.tag.outputs.version }}"
+          gh release create "${TAG}" \
+            --title "mihomo-ctl v${VER}" \
+            --notes "## mihomo-ctl v${VER}
+
+### 快速安装
+
+\`\`\`bash
+# macOS (Apple Silicon)
+curl -L https://github.com/luoyueliang/net-tools/releases/download/${TAG}/mihomo-ctl-${VER}-darwin-arm64.gz \\
+  | gunzip | sudo tee /usr/local/bin/mihomo-ctl > /dev/null && sudo chmod +x /usr/local/bin/mihomo-ctl
+
+# macOS (Intel)
+curl -L https://github.com/luoyueliang/net-tools/releases/download/${TAG}/mihomo-ctl-${VER}-darwin-x64.gz \\
+  | gunzip | sudo tee /usr/local/bin/mihomo-ctl > /dev/null && sudo chmod +x /usr/local/bin/mihomo-ctl
+
+# Linux x64
+curl -L https://github.com/luoyueliang/net-tools/releases/download/${TAG}/mihomo-ctl-${VER}-linux-x64.gz \\
+  | gunzip | sudo tee /usr/local/bin/mihomo-ctl > /dev/null && sudo chmod +x /usr/local/bin/mihomo-ctl
+
+# Linux arm64
+curl -L https://github.com/luoyueliang/net-tools/releases/download/${TAG}/mihomo-ctl-${VER}-linux-arm64.gz \\
+  | gunzip | sudo tee /usr/local/bin/mihomo-ctl > /dev/null && sudo chmod +x /usr/local/bin/mihomo-ctl
+\`\`\`
+
+### 自升级
+\`\`\`bash
+mihomo-ctl upgrade
+\`\`\`
+
+> 需已安装 Node.js v16+（目标机器运行时依赖）
+"
+
+  # ── Step 2: 多平台构建并上传资产 ──────────────────────────────
+  build-upload:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - os: macos-latest       # Apple Silicon (arm64)
+            platform: darwin
+            arch: arm64
+          - os: macos-13           # Intel (x64)
+            platform: darwin
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: mihomo
+        run: npm ci
+
+      - name: Build obfuscated release
+        working-directory: mihomo
+        run: node scripts/release.js
+
+      - name: Verify asset exists
+        working-directory: mihomo
+        run: |
+          VER="${{ needs.create-release.outputs.version }}"
+          ASSET="dist/mihomo-ctl-${VER}-${{ matrix.platform }}-${{ matrix.arch }}.gz"
+          if [ ! -f "${ASSET}" ]; then
+            echo "ERROR: Expected asset not found: ${ASSET}"
+            echo "Contents of dist/:"
+            ls -la dist/
+            exit 1
+          fi
+          echo "Asset ready: ${ASSET} ($(du -sh ${ASSET} | cut -f1))"
+
+      - name: Upload asset to Release
+        working-directory: mihomo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.create-release.outputs.tag }}"
+          VER="${{ needs.create-release.outputs.version }}"
+          gh release upload "${TAG}" \
+            "dist/mihomo-ctl-${VER}-${{ matrix.platform }}-${{ matrix.arch }}.gz" \
+            --clobber \
+            --repo luoyueliang/net-tools

@@ -239,12 +239,56 @@ function installStartup() {
 }
 
 // ── Step 6: Install mihomo-ctl ────────────────────────────────────
-function installCtl() {
+async function installCtl() {
+  const dst     = path.join(binDir, 'mihomo-ctl');
+  // ctl 包命名使用 Node.js 原生 platform/arch（darwin/linux, arm64/x64）
+  const osMap   = { darwin: 'darwin', linux: 'linux', freebsd: 'linux' };
+  const archMap = { arm64: 'arm64', x64: 'x64' };
+  const osName  = osMap[process.platform] || 'linux';
+  const ctlArch = archMap[process.arch] || 'x64';
+
+  // 1. 查询 GitHub Release 最新版本
+  let ctlVer;
+  try {
+    const out = run(
+      'curl -sf --max-time 10 ' +
+      '"https://api.github.com/repos/luoyueliang/net-tools/releases?per_page=20"'
+    );
+    if (out) {
+      const rels = JSON.parse(out);
+      const rel  = rels.find(r => r.tag_name && r.tag_name.startsWith('mihomo-ctl-v'));
+      if (rel) ctlVer = rel.tag_name.replace('mihomo-ctl-v', '');
+    }
+  } catch {}
+
+  // 2. 尝试从 GitHub Release 下载
+  if (ctlVer) {
+    const assetName = `mihomo-ctl-${ctlVer}-${osName}-${ctlArch}.gz`;
+    const url       = `https://github.com/luoyueliang/net-tools/releases/download/mihomo-ctl-v${ctlVer}/${assetName}`;
+    const tmpGz     = path.join(os.tmpdir(), assetName);
+    const tmpBin    = path.join(os.tmpdir(), 'mihomo-ctl-download');
+
+    info(`Downloading mihomo-ctl v${ctlVer} (${osName}-${ctlArch}) from GitHub Release...`);
+    try {
+      run(`curl -fsSL --max-time 60 -o "${tmpGz}" "${url}"`);
+      run(`gunzip -c "${tmpGz}" > "${tmpBin}" && chmod +x "${tmpBin}"`);
+      run(`sudo mv "${tmpBin}" "${dst}"`);
+      try { fs.unlinkSync(tmpGz); } catch {}
+      success(`mihomo-ctl v${ctlVer} installed to ${dst}`);
+      return;
+    } catch (e) {
+      warn(`GitHub Release download failed: ${e.message}`);
+      warn('Falling back to local source copy...');
+    }
+  } else {
+    warn('No mihomo-ctl release found on GitHub, using local source copy');
+  }
+
+  // 3. 回退：从本地 src/mihomo-ctl 复制
   const src = path.join(REPO_ROOT, 'src', 'mihomo-ctl');
-  const dst = path.join(binDir, 'mihomo-ctl');
   run(`sudo cp "${src}" "${dst}"`);
   run(`sudo chmod +x "${dst}"`);
-  success(`mihomo-ctl installed to ${dst}`);
+  success(`mihomo-ctl installed from local source to ${dst}`);
 }
 
 // ── Step 7: Install Web UI ────────────────────────────────────────
@@ -292,7 +336,7 @@ async function main() {
   createDirs();
   installConfig();
   installStartup();
-  installCtl();
+  await installCtl();
   installUi();
 
   console.log('\n' + c.bold('='.repeat(50)));
