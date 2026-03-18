@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.8';
+const VERSION     = '1.4.10';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -188,7 +188,12 @@ const PLATFORM_ADAPTERS = {
     forceKill()  { run(`pkill -KILL -f 'mihomo -d' 2>/dev/null || true`); },
     getPid()     { return run("pgrep -f 'mihomo -d'"); },
     killHint()   { return 'sudo kill $(pgrep -f "mihomo -d")'; },
-    port7890Ok() { return !!run('lsof -i :7890 -sTCP:LISTEN -n | grep mihomo | head -1'); },
+    port7890Ok() {
+      // netstat -an 不需要 root 权限，可见所有监听端口（含 root 进程）
+      if (run('netstat -an 2>/dev/null | grep "127.0.0.1.7890.*LISTEN"')) return true;
+      // 普通模式 fallback（非 root 启动时）
+      return !!run('lsof -i :7890 -sTCP:LISTEN -n 2>/dev/null | grep -i mihomo | head -1');
+    },
     hasGit()     { return !!run('which git 2>/dev/null'); },
     gitNull:       '2>/dev/null',
     extraOfflineStatus() {
@@ -1592,18 +1597,11 @@ async function cmdTunOff() {
   let cfgText = fs.readFileSync(CONFIG, 'utf8');
   const newCfg = setTunEnable(cfgText, 'false');
   if (newCfg) fs.writeFileSync(CONFIG, newCfg);
-  console.log(c.bold('\n── 关闭 TUN 透明代理 ─────────────────────────────'));
+  console.log(c.bold('\n\u2500\u2500 \u5173\u95ed TUN \u900f\u660e\u4ee3\u7406 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'));
   run(`sudo pkill -f 'mihomo -d' 2>/dev/null || pkill -f 'mihomo -d' 2>/dev/null || true`);
-  await new Promise(r => setTimeout(r, 1200));
-  P.startProcess();
-  await new Promise(r => setTimeout(r, 1500));
   try { fs.unlinkSync(TUN_STATE_FILE); } catch {}
-  if (await isRunning()) {
-    console.log(c.green('✓ TUN 模式已关闭'));
-    console.log(c.dim('  Mihomo 已恢复普通模式（系统代理 / LaunchAgent）'));
-  } else {
-    console.log(c.yellow('⚠ TUN 已关闭，Mihomo 未自动重启，请手动运行: mihomo-ctl start'));
-  }
+  console.log(c.green('✓ TUN 模式已关闭'));
+  console.log(c.yellow('  请等待约 10 秒后运行: mihomo-ctl start'));
 }
 
 // ─── 命令：mode ────────────────────────────────────────────────
