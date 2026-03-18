@@ -109,6 +109,22 @@ node --version   # v16.x.x 或更高
 
 > **Windows 用户**：请直接查看本章节的 **Windows（自动安装）** 部分，有专属安装脚本，无需关注下方 Unix 命令。
 
+### 方式一：从 GitHub Release 直接安装（推荐，无需克隆仓库）
+
+前往 [GitHub Releases](https://github.com/luoyueliang/net-tools/releases) 下载最新版  `mihomo-ctl-installer-*.tar.gz`，或使用以下命令（将 `1.4.3` 替换为实际版本号）：
+
+```bash
+VER=1.4.3
+curl -LO https://github.com/luoyueliang/net-tools/releases/download/mihomo-ctl-v${VER}/mihomo-ctl-installer-${VER}.tar.gz
+
+# 解压并安装（自动检测平台，macOS / Linux / Alpine / FreeBSD / OpenWrt）
+tar xzf mihomo-ctl-installer-${VER}.tar.gz
+cd mihomo-ctl-installer-${VER}/
+node scripts/install.js
+```
+
+### 方式二：从本地仓库安装
+
 ```bash
 # 进入 mihomo 目录（克隆方式见上方"获取源码"章节）
 cd mihomo
