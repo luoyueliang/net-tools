@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.7';
+const VERSION     = '1.4.8';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -823,7 +823,7 @@ async function cmdStatus() {
   console.log(c.green('● 运行中') + `  mihomo: ${ver.version || '?'}   ctl: v${VERSION}   ${autostartStr}`);
 
   // PID & 端口
-  const pid = P.getPid();
+  const pid = (P.getPid() || '').split(/\s+/)[0];
   console.log(`  PID: ${pid || '?'}   端口: ${P.port7890Ok() ? c.green('7890 ✓') : c.red('7890 ✗')}  管理: 9090`);
 
   // 模式 & 日志 & DNS & 代理
@@ -831,7 +831,16 @@ async function cmdStatus() {
   const logStr   = logLevel === 'silent' ? c.dim('日志: 关闭') : c.yellow(`日志: ${logLevel}`);
   const dnsStr   = isDnsManagedByMihomo() ? c.green('DNS: 已接管') : c.dim('DNS: 系统默认');
   const proxyStr = P.isSystemProxyActive() ? c.green('代理: 已接管') : c.dim('代理: 系统默认');
-  const tunStr   = cfg.tun?.enable === true ? c.green('TUN: 已接管') : c.dim('TUN: 未开启');
+  // TUN 状态：优先 API（运行中进程的真实状态），fallback 读 yaml（进程重建中时）
+  let tunEnabled = cfg.tun?.enable === true;
+  if (!tunEnabled) {
+    try {
+      const rawYaml = fs.readFileSync(CONFIG, 'utf8');
+      const ti = rawYaml.indexOf('\ntun:\n');
+      if (ti >= 0) tunEnabled = /\n\s+enable:\s*true/.test(rawYaml.slice(ti, ti + 300));
+    } catch {}
+  }
+  const tunStr = tunEnabled ? c.green('TUN: 已接管') : c.dim('TUN: 未开启');
   console.log(`  模式: ${c.cyan(cfg.mode || '?')}   ${logStr}   ${dnsStr}   ${proxyStr}   ${tunStr}`);
 
   // 当前出口节点
@@ -1543,13 +1552,18 @@ async function cmdTunOn() {
   const enableIdx = cfgText.indexOf('\n  enable:', tunIdx);
   const lineEnd   = cfgText.indexOf('\n', enableIdx + 1);
   if (/enable:\s*true/.test(cfgText.slice(enableIdx, lineEnd))) {
-    console.log(c.green('✓ TUN 已处于开启状态')); return;
+    // yaml 已是 true，但运行中进程是否真的加载了 TUN？
+    const runCfg = await apiGet('/configs').catch(() => ({}));
+    if (runCfg.tun?.enable === true) { console.log(c.green('✓ TUN 已处于开启状态')); return; }
+    console.log(c.dim('  TUN 配置已启用但运行中进程未加载（可能存在遗留进程），正在重启...'));
   }
   const newCfg = setTunEnable(cfgText, 'true');
   fs.writeFileSync(CONFIG, newCfg);
   console.log(c.bold('\n── 开启 TUN 透明代理 ─────────────────────────────'));
+  // 先杀掉所有旧进程（launchctl unload 仅对 LaunchAgent 有效，手动启动的进程需显式 kill）
   run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
-  await new Promise(r => setTimeout(r, 600));
+  run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+  await new Promise(r => setTimeout(r, 1200));
   console.log(c.dim('  以 sudo 启动（TUN auto-route 需 root 权限）...'));
   spawn('sudo', [BIN, '-d', CONFIG_DIR], { detached: true, stdio: 'ignore' }).unref();
   await new Promise(r => setTimeout(r, 2000));
@@ -1560,7 +1574,8 @@ async function cmdTunOn() {
     console.log(c.dim('  关闭: mihomo-ctl tun-off'));
   } else {
     fs.writeFileSync(CONFIG, cfgText);
-    run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+    P.startProcess();
+    await new Promise(r => setTimeout(r, 1500));
     console.log(c.red('✗ TUN 模式启动失败（sudo 可能需要密码）'));
     console.log(c.dim('\n  在 /etc/sudoers 中添加免密授权 (sudo visudo):'));
     console.log(c.cyan(`    ${os.userInfo().username} ALL=(ALL) NOPASSWD: ${BIN}`));
@@ -1579,12 +1594,16 @@ async function cmdTunOff() {
   if (newCfg) fs.writeFileSync(CONFIG, newCfg);
   console.log(c.bold('\n── 关闭 TUN 透明代理 ─────────────────────────────'));
   run(`sudo pkill -f 'mihomo -d' 2>/dev/null || pkill -f 'mihomo -d' 2>/dev/null || true`);
-  await new Promise(r => setTimeout(r, 600));
-  run(`launchctl load "${PLIST}" 2>/dev/null || true`);
+  await new Promise(r => setTimeout(r, 1200));
+  P.startProcess();
   await new Promise(r => setTimeout(r, 1500));
   try { fs.unlinkSync(TUN_STATE_FILE); } catch {}
-  console.log(c.green('✓ TUN 模式已关闭'));
-  console.log(c.dim('  Mihomo 已恢复系统代理 (LaunchAgent) 模式'));
+  if (await isRunning()) {
+    console.log(c.green('✓ TUN 模式已关闭'));
+    console.log(c.dim('  Mihomo 已恢复普通模式（系统代理 / LaunchAgent）'));
+  } else {
+    console.log(c.yellow('⚠ TUN 已关闭，Mihomo 未自动重启，请手动运行: mihomo-ctl start'));
+  }
 }
 
 // ─── 命令：mode ────────────────────────────────────────────────
