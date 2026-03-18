@@ -162,63 +162,76 @@ const rawKB = (fs.statSync(RAW_FILE).size / 1024).toFixed(0);
 const gzKB  = (gzipped.length / 1024).toFixed(0);
 ok(`${path.basename(GZ_FILE)}  (${rawKB} KB \u2192 ${gzKB} KB gz)`);
 
-// ── Step 6: manifest ──────────────────────────────────────────────────────────
+// ── Step 6: installer tar.gz（install.js + 混淆 mihomo-ctl，目录结构与仓库一致）──
+// 结构: mihomo-ctl-installer-{ver}/scripts/install.js
+//       mihomo-ctl-installer-{ver}/src/mihomo-ctl
+// 用法: tar xzf mihomo-ctl-installer-{ver}.tar.gz && cd mihomo-ctl-installer-{ver} && node scripts/install.js
+const installerName = `mihomo-ctl-installer-${VERSION}`;
+const installerTar  = path.join(distDir, `${installerName}.tar.gz`);
+const pkgDir        = path.join(distDir, '_pkg', installerName);
+const pkgScripts    = path.join(pkgDir, 'scripts');
+const pkgSrc        = path.join(pkgDir, 'src');
+
+// 清理旧包目录
+if (fs.existsSync(path.join(distDir, '_pkg'))) fs.rmSync(path.join(distDir, '_pkg'), { recursive: true, force: true });
+fs.mkdirSync(pkgScripts, { recursive: true });
+fs.mkdirSync(pkgSrc,     { recursive: true });
+
+// 复制 install.js（原始，未混淆）
+fs.copyFileSync(path.join(rootDir, 'scripts', 'install.js'), path.join(pkgScripts, 'install.js'));
+// 复制混淆后的 mihomo-ctl
+fs.copyFileSync(RAW_FILE, path.join(pkgSrc, 'mihomo-ctl'));
+fs.chmodSync(path.join(pkgSrc, 'mihomo-ctl'), 0o755);
+
+if (fs.existsSync(installerTar)) fs.rmSync(installerTar, { force: true });
+execSync(`tar czf "${installerTar}" -C "${path.join(distDir, '_pkg')}" "${installerName}"`, { stdio: 'pipe' });
+fs.rmSync(path.join(distDir, '_pkg'), { recursive: true, force: true });
+
+const tarKB = (fs.statSync(installerTar).size / 1024).toFixed(0);
+ok(`${path.basename(installerTar)}  (${tarKB} KB)`);
+
+// ── Step 7: manifest ──────────────────────────────────────────────────────────
 const manifest = {
-  version:  VERSION,
-  built_at: new Date().toISOString(),
-  asset:    path.basename(GZ_FILE),
-  platform: PLAT,
-  arch:     ARCH,
+  version:   VERSION,
+  built_at:  new Date().toISOString(),
+  gz_asset:  path.basename(GZ_FILE),
+  installer: path.basename(installerTar),
+  platform:  PLAT,
+  arch:      ARCH,
 };
 fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
-// ── Step 7: 可选发布到 GitHub Release ─────────────────────────────────────────
+// ── Step 8: 可选发布到 GitHub Release ─────────────────────────────────────────
 if (PUBLISH) {
   console.log();
   log('发布到 GitHub Release...');
   const tag = `mihomo-ctl-v${VERSION}`;
-  const title = `mihomo-ctl v${VERSION}`;
-  const notes = [
-    `## mihomo-ctl v${VERSION}`,
-    '',
-    '### 安装',
-    '```bash',
-    `# macOS arm64`,
-    `curl -L https://github.com/luoyueliang/net-tools/releases/download/${tag}/mihomo-ctl-${VERSION}-darwin-arm64.gz | gunzip > mihomo-ctl && chmod +x mihomo-ctl && sudo mv mihomo-ctl /usr/local/bin/`,
-    '```',
-    '',
-    '> 其余平台包见附件列表',
-  ].join('\n');
 
-  // 检查 gh CLI
   try { execSync('gh --version', { stdio: 'pipe' }); }
   catch { die('gh CLI 未安装，请先安装 GitHub CLI: https://cli.github.com'); }
 
-  // 创建 Release（已存在则忽略错误，继续上传）
   try {
-    execSync(`gh release create "${tag}" --title "${title}" --notes '${notes.replace(/'/g, "'\\''")}' --repo luoyueliang/net-tools`, { stdio: 'pipe' });
+    execSync(`gh release create "${tag}" --title "mihomo-ctl v${VERSION}" --generate-notes --repo luoyueliang/net-tools`, { stdio: 'pipe' });
     ok(`Release ${tag} 已创建`);
   } catch (e) {
-    if (e.message && e.message.includes('already exists')) {
-      warn(`Release ${tag} 已存在，直接上传资产`);
-    } else {
-      die(`创建 Release 失败: ${e.message}`);
-    }
+    if (e.message && e.message.includes('already exists')) warn(`Release ${tag} 已存在，直接上传资产`);
+    else die(`创建 Release 失败: ${e.message}`);
   }
 
-  // 上传资产
-  execSync(`gh release upload "${tag}" "${GZ_FILE}" --clobber --repo luoyueliang/net-tools`, { stdio: 'inherit' });
-  ok(`已上传: ${path.basename(GZ_FILE)}`);
+  // 上传 installer + 平台 gz
+  execSync(`gh release upload "${tag}" "${installerTar}" "${GZ_FILE}" --clobber --repo luoyueliang/net-tools`, { stdio: 'inherit' });
+  ok(`已上传: ${path.basename(installerTar)}, ${path.basename(GZ_FILE)}`);
 }
 
 // ── 完成 ──────────────────────────────────────────────────────────────────────
 console.log();
-console.log('\u2500'.repeat(52));
-ok(`dist/${path.basename(GZ_FILE)}  (${gzKB} KB gz)`);
+console.log('─'.repeat(52));
+ok(`dist/${path.basename(GZ_FILE)}  (${gzKB} KB gz)   ← upgrade 用`);
+ok(`dist/${path.basename(installerTar)}  (${tarKB} KB)   ← 安装用`);
 if (!PUBLISH) {
-  console.log(c.y(`\u53d1\u5e03: node scripts/release.js --publish`));
-  console.log(c.b(`\u6216\u7531 GitHub Actions \u5728 tag push \u540e\u81ea\u52a8\u6784\u5efa`));
+  console.log(c.y(`发布: node scripts/release.js --publish`));
+  console.log(c.b(`或由 GitHub Actions 在 tag push 后自动构建`));
 }
 console.log();
-console.log(`\u672c\u5730\u9a8c\u8bc1: ${c.b(`gunzip -c dist/${path.basename(GZ_FILE)} > /tmp/m && chmod +x /tmp/m && /tmp/m version`)}`);
+console.log(`安装验证: ${c.b(`tar xzf dist/${path.basename(installerTar)} && ls ${installerName}/`)}`);
 

@@ -34,23 +34,46 @@ jobs:
           VER="${{ steps.tag.outputs.version }}"
           BASE="https://github.com/luoyueliang/net-tools/releases/download/${TAG}"
           printf '## mihomo-ctl v%s\n\n'            "${VER}"             > /tmp/notes.md
-          printf '### 快速安装\n\n'                                     >> /tmp/notes.md
+          printf '### 安装（推荐）\n\n'                                  >> /tmp/notes.md
           printf '```bash\n'                                             >> /tmp/notes.md
-          printf '# macOS arm64\n'                                      >> /tmp/notes.md
-          printf 'curl -L %s/mihomo-ctl-%s-darwin-arm64.gz | gunzip | sudo tee /usr/local/bin/mihomo-ctl >/dev/null\n' "${BASE}" "${VER}" >> /tmp/notes.md
-          printf '# macOS x64\n'                                        >> /tmp/notes.md
-          printf 'curl -L %s/mihomo-ctl-%s-darwin-x64.gz   | gunzip | sudo tee /usr/local/bin/mihomo-ctl >/dev/null\n' "${BASE}" "${VER}" >> /tmp/notes.md
-          printf '# Linux x64\n'                                        >> /tmp/notes.md
-          printf 'curl -L %s/mihomo-ctl-%s-linux-x64.gz    | gunzip | sudo tee /usr/local/bin/mihomo-ctl >/dev/null\n' "${BASE}" "${VER}" >> /tmp/notes.md
-          printf '# Linux arm64\n'                                      >> /tmp/notes.md
-          printf 'curl -L %s/mihomo-ctl-%s-linux-arm64.gz  | gunzip | sudo tee /usr/local/bin/mihomo-ctl >/dev/null\n' "${BASE}" "${VER}" >> /tmp/notes.md
-          printf '```\n\n'                                              >> /tmp/notes.md
-          printf '> 需已安装 Node.js v16+（目标机器运行时依赖）\n'      >> /tmp/notes.md
+          printf '# 1. 下载安装包\n'                                     >> /tmp/notes.md
+          printf 'curl -LO %s/mihomo-ctl-installer-%s.tar.gz\n' "${BASE}" "${VER}" >> /tmp/notes.md
+          printf '# 2. 解压\n'                                           >> /tmp/notes.md
+          printf 'tar xzf mihomo-ctl-installer-%s.tar.gz\n' "${VER}"   >> /tmp/notes.md
+          printf 'cd mihomo-ctl-installer-%s\n' "${VER}"                >> /tmp/notes.md
+          printf '# 3. 安装（自动检测平台）\n'                            >> /tmp/notes.md
+          printf 'node scripts/install.js\n'                             >> /tmp/notes.md
+          printf '```\n\n'                                               >> /tmp/notes.md
+          printf '### 自升级（已安装用户）\n\n'                           >> /tmp/notes.md
+          printf '```bash\nmihomo-ctl upgrade\n```\n\n'                  >> /tmp/notes.md
+          printf '> 需已安装 Node.js v16+\n'                             >> /tmp/notes.md
           gh release create "${TAG}" \
             --title "mihomo-ctl v${VER}" \
             --notes-file /tmp/notes.md \
             --repo luoyueliang/net-tools || \
             echo "Release already exists, will upload assets to existing release"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build installer package
+        working-directory: mihomo
+        run: |
+          npm install
+          node scripts/release.js
+
+      - name: Upload installer to Release
+        working-directory: mihomo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VER="${{ steps.tag.outputs.version }}"
+          gh release upload "${TAG}" \
+            "dist/mihomo-ctl-installer-${VER}.tar.gz" \
+            --clobber \
+            --repo luoyueliang/net-tools
 
   # ── Step 2: 多平台构建并上传资产
   build-upload:
