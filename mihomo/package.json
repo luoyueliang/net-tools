@@ -7,6 +7,6 @@
     "release": "node scripts/release.js"
   },
   "devDependencies": {
-    "postject": "^1.0.0-alpha.6"
+    "javascript-obfuscator": "^4.1.1"
   }
 }
