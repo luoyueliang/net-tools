@@ -777,7 +777,10 @@ function apiResponse(res, code, data) {
 }
 
 function startApiServer() {
-  const uiFile = path.join(__dirname, '..', 'ui', 'index.html');
+  // 使用安装后的运行时 UI 路径，而非 __dirname（部署后 __dirname=/usr/local/bin/）
+  const uiDir      = path.join(DATA_DIR, 'ui');
+  const uiFile     = path.join(uiDir, 'index.html');
+  const selfFile   = path.join(uiDir, 'self-service.html');
 
   const server = http.createServer((req, res) => {
     const url   = req.url.split('?')[0];
@@ -789,7 +792,7 @@ function startApiServer() {
       res.end(); return;
     }
 
-    // 静态 UI
+    // 静态 UI — 主管理面板
     if (url === '/' || url === '/ui' || url === '/ui/') {
       if (fs.existsSync(uiFile)) {
         const html = fs.readFileSync(uiFile, 'utf8');
@@ -799,10 +802,24 @@ function startApiServer() {
       res.writeHead(404); res.end('UI not found. Run install first.'); return;
     }
 
+    // 静态 UI — 自助申请页面（/self）
+    if (url === '/self' || url === '/self/') {
+      if (getSetting('selfservice_enabled') !== '1') {
+        res.writeHead(403); res.end('Self-service is disabled.'); return;
+      }
+      if (fs.existsSync(selfFile)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(fs.readFileSync(selfFile, 'utf8'));
+      } else {
+        res.writeHead(404); res.end('self-service.html not installed. Run install first.');
+      }
+      return;
+    }
+
     // ── API 路由 ──────────────────────────────────────────────
     let body = '';
     req.on('data', d => body += d);
-    req.on('end', () => {
+    req.on('end', async () => {
       let json = {};
       try { if (body) json = JSON.parse(body); } catch {}
 
@@ -827,9 +844,8 @@ function startApiServer() {
         const protocol = (json.protocol || 'socks').toLowerCase();
         const username = json.username || randStr(8);
         const password = json.password || randStr(12);
-        const usedPorts = new Set(db().prepare('SELECT port FROM users').all().map(r => r.port));
-        let port, tries = 0;
-        do { port = randPort(); tries++; } while (usedPorts.has(port) && tries < 1000);
+        let port;
+        try { port = allocPort(SOCKS_MIN, SOCKS_MAX); } catch { return apiResponse(res, 500, { error: '端口不足' }); }
         const tag = `inbound-${name}-${port}`;
         try {
           db().prepare('INSERT INTO users (name,port,protocol,username,password,tag) VALUES (?,?,?,?,?,?)').run(name, port, protocol, username, password, tag);
@@ -893,6 +909,91 @@ function startApiServer() {
         return res.end(yaml);
       }
 
+      // ── 自助申请 API ──────────────────────────────────────────
+      // POST /api/self/request  { email }  →  发送验证码邮件
+      if (method === 'POST' && url === '/api/self/request') {
+        if (getSetting('selfservice_enabled') !== '1')
+          return apiResponse(res, 403, { error: '自助申请功能未开启' });
+        const email = json.email;
+        if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+          return apiResponse(res, 400, { error: '邮箱格式错误' });
+        // 清理同邮箱旧验证码
+        db().prepare('DELETE FROM verifications WHERE email=? AND used=0').run(email);
+        const code      = String(Math.floor(100000 + Math.random() * 900000));
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 min
+        db().prepare('INSERT INTO verifications(email,code,expires_at) VALUES(?,?,?)').run(email, code, expiresAt);
+        const hours = parseInt(getSetting('selfservice_hours', '2')) || 2;
+        try {
+          await sendMail(email, '【SmartXray】您的验证码',
+            `您申请的代理账户验证码：${code}\n\n有效期 10 分钟，账户有效期 ${hours} 小时。\n\n如非本人操作请忽略。`);
+          return apiResponse(res, 200, { ok: true });
+        } catch (e) {
+          return apiResponse(res, 500, { error: '邮件发送失败: ' + e.message });
+        }
+      }
+
+      // POST /api/self/verify  { email, code }  →  创建临时账户，返回凭据
+      if (method === 'POST' && url === '/api/self/verify') {
+        if (getSetting('selfservice_enabled') !== '1')
+          return apiResponse(res, 403, { error: '自助申请功能未开启' });
+        const { email: verEmail, code: verCode } = json;
+        if (!verEmail || !verCode)
+          return apiResponse(res, 400, { error: '参数缺失' });
+        const now = new Date().toISOString();
+        const rec = db().prepare(
+          'SELECT * FROM verifications WHERE email=? AND code=? AND used=0 AND expires_at>?'
+        ).get(verEmail, verCode, now);
+        if (!rec) return apiResponse(res, 400, { error: '验证码无效或已过期' });
+        db().prepare('UPDATE verifications SET used=1 WHERE id=?').run(rec.id);
+
+        const hours   = parseInt(getSetting('selfservice_hours', '2')) || 2;
+        const safeName = verEmail.split('@')[0].replace(/[^a-z0-9]/gi, '').slice(0, 10) || 'user';
+        const name    = `ss-${safeName}-${Date.now().toString(36)}`;
+        const username = randStr(8);
+        const password = randStr(12);
+        const expiresAt = new Date(Date.now() + hours * 3600000).toISOString();
+        let socksPort, httpPort;
+        try {
+          socksPort = allocPort(SOCKS_MIN, SOCKS_MAX);
+          httpPort  = allocPort(HTTP_MIN,  HTTP_MAX);
+        } catch (e) { return apiResponse(res, 500, { error: '端口分配失败' }); }
+        const uuid = newUUID();
+        const tag  = `ss-${name}-${socksPort}`;
+        try {
+          db().prepare(
+            `INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag,expires_at)
+             VALUES (?,?,?,?,'socks',?,?,?,?)`
+          ).run(name, socksPort, httpPort, uuid, username, password, tag, expiresAt);
+          firewallOpen(socksPort);
+          firewallOpen(httpPort);
+          cmdReload();
+        } catch (e) { return apiResponse(res, 500, { error: '账户创建失败: ' + e.message }); }
+
+        const serverIp = getSetting('server_ip', '');
+        const reality  = getRealityConfig();
+        const result = {
+          socks5:     { server: serverIp, port: socksPort, username, password },
+          http:       { server: serverIp, port: httpPort,  username, password },
+          expires_at: expiresAt,
+        };
+        if (reality.enabled && reality.publicKey && uuid) {
+          const shareLink =
+            `vless://${uuid}@${serverIp}:${reality.port}` +
+            `?type=tcp&security=reality` +
+            `&sni=${encodeURIComponent(reality.serverNames[0] || '')}` +
+            `&pbk=${encodeURIComponent(reality.publicKey)}` +
+            `&sid=${encodeURIComponent(reality.shortIds[0] || '')}` +
+            `&flow=xtls-rprx-vision#xray-${name}`;
+          result.vless = {
+            server: serverIp, port: reality.port, uuid,
+            sni: reality.serverNames[0] || '',
+            publicKey: reality.publicKey,
+            shareLink,
+          };
+        }
+        return apiResponse(res, 200, result);
+      }
+
       res.writeHead(404); res.end();
     });
   });
@@ -925,7 +1026,7 @@ function cmdAutostart(args) {
 // ─── help ────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
-${c.bold('xray-ctl')} — Xray Server 管理工具 v2
+${c.bold('xray-ctl')} v${VERSION} — Xray Server 管理工具
 
 ${c.bold('进程管理')}
   xray-ctl start              启动 Xray

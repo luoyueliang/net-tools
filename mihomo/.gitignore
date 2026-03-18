@@ -6,3 +6,8 @@ logs/*.log
 
 # 临时文件
 /tmp/mihomo-*
+
+# 打包产物和依赖
+dist/
+node_modules/
+package-lock.json
