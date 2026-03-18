@@ -210,15 +210,54 @@ function installStartup() {
 }
 
 // ── Step 6: Install xray-ctl ─────────────────────────────────────
-function installCtl() {
-  const src = path.join(REPO_ROOT, 'src', 'xray-ctl');
+async function installCtl() {
+  const dst = path.join(binDir, 'xray-ctl');
+
+  // 1. 查询 GitHub Release 最新版本
+  let ctlVer;
   try {
-    execSync(`sudo cp "${src}" "${CTL_BIN}" && sudo chmod 755 "${CTL_BIN}"`, { stdio: 'pipe' });
-    success(`xray-ctl installed to ${CTL_BIN}`);
+    const out = run(
+      'curl -sf --max-time 10 ' +
+      '"https://api.github.com/repos/luoyueliang/net-tools/releases?per_page=20"'
+    );
+    if (out) {
+      const rels = JSON.parse(out);
+      const rel  = rels.find(r => r.tag_name && r.tag_name.startsWith('smartxray-v'));
+      if (rel) ctlVer = rel.tag_name.replace('smartxray-v', '');
+    }
+  } catch {}
+
+  // 2. 尝试从 GitHub Release 下载
+  if (ctlVer) {
+    const assetName = `xray-ctl-${ctlVer}.gz`;
+    const url       = `https://github.com/luoyueliang/net-tools/releases/download/smartxray-v${ctlVer}/${assetName}`;
+    const tmpGz     = path.join(os.tmpdir(), assetName);
+    const tmpBin    = path.join(os.tmpdir(), 'xray-ctl-download');
+
+    info(`Downloading xray-ctl v${ctlVer} from GitHub Release...`);
+    try {
+      run(`curl -fsSL --max-time 60 -o "${tmpGz}" "${url}"`);
+      run(`gunzip -c "${tmpGz}" > "${tmpBin}" && chmod +x "${tmpBin}"`);
+      run(`sudo mv "${tmpBin}" "${dst}"`);
+      try { fs.unlinkSync(tmpGz); } catch {}
+      success(`xray-ctl v${ctlVer} installed to ${dst}`);
+      return;
+    } catch (e) {
+      warn(`GitHub Release download failed: ${e.message}`);
+      warn('Falling back to local source copy...');
+    }
+  } else {
+    warn('No smartxray release found on GitHub, using local source copy');
+  }
+
+  // 3. 回退：从本地 src/xray-ctl 复制
+  try {
+    execSync(`sudo cp "${path.join(REPO_ROOT, 'src', 'xray-ctl')}" "${dst}" && sudo chmod 755 "${dst}"`, { stdio: 'pipe' });
+    success(`xray-ctl installed to ${dst}`);
   } catch {
     const local = path.join(HOME, '.local/bin/xray-ctl');
     fs.mkdirSync(path.dirname(local), { recursive: true });
-    fs.copyFileSync(src, local);
+    fs.copyFileSync(path.join(REPO_ROOT, 'src', 'xray-ctl'), local);
     fs.chmodSync(local, 0o755);
     success(`xray-ctl installed to ${local} (no sudo)`);
   }
@@ -252,7 +291,7 @@ async function main() {
   if (!noDownload) await installXray();
   createDirs();
   installStartup();
-  installCtl();
+  await installCtl();
   installUi();
 
   console.log('\n' + c.bold('='.repeat(50)));

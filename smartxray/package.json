@@ -1,10 +1,12 @@
 {
   "name": "smartxray",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Xray server manager with SQLite, dynamic config, firewall & Web UI",
   "main": "src/xray-ctl",
   "scripts": {
-    "start": "node src/xray-ctl start"
+    "start":   "node src/xray-ctl start",
+    "pack":    "node scripts/release.js",
+    "release": "node scripts/release.js --publish"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",

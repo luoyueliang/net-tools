@@ -209,10 +209,49 @@ function installStartup() {
 }
 
 // ── Step 6: Install __CTL_NAME__ ─────────────────────────────────
-function installCtl() {
-  const src = path.join(REPO_ROOT, 'src', 'tool-ctl');
+async function installCtl() {
   const dst = path.join(binDir, '__CTL_NAME__');
-  run(`sudo cp "${src}" "${dst}"`);
+
+  // 1. 查询 GitHub Release 最新版本
+  // TODO: 替换 '__TOOL_NAME__-v' 为实际的 tag 前缀
+  let ctlVer;
+  try {
+    const out = run(
+      'curl -sf --max-time 10 ' +
+      '"https://api.github.com/repos/__GITHUB_REPO__/releases?per_page=20"'
+    );
+    if (out) {
+      const rels = JSON.parse(out);
+      const rel  = rels.find(r => r.tag_name && r.tag_name.startsWith('__TOOL_NAME__-v'));
+      if (rel) ctlVer = rel.tag_name.replace('__TOOL_NAME__-v', '');
+    }
+  } catch {}
+
+  // 2. 尝试从 GitHub Release 下载
+  if (ctlVer) {
+    const assetName = `__CTL_NAME__-${ctlVer}.gz`;
+    const url       = `https://github.com/__GITHUB_REPO__/releases/download/__TOOL_NAME__-v${ctlVer}/${assetName}`;
+    const tmpGz     = path.join(os.tmpdir(), assetName);
+    const tmpBin    = path.join(os.tmpdir(), '__CTL_NAME__-download');
+
+    info(`Downloading __CTL_NAME__ v${ctlVer} from GitHub Release...`);
+    try {
+      run(`curl -fsSL --max-time 60 -o "${tmpGz}" "${url}"`);
+      run(`gunzip -c "${tmpGz}" > "${tmpBin}" && chmod +x "${tmpBin}"`);
+      run(`sudo mv "${tmpBin}" "${dst}"`);
+      try { fs.unlinkSync(tmpGz); } catch {}
+      success(`__CTL_NAME__ v${ctlVer} installed to ${dst}`);
+      return;
+    } catch (e) {
+      warn(`GitHub Release download failed: ${e.message}`);
+      warn('Falling back to local source copy...');
+    }
+  } else {
+    warn('No __TOOL_NAME__ release found on GitHub, using local source copy');
+  }
+
+  // 3. 回退：从本地 src/tool-ctl 复制
+  run(`sudo cp "${path.join(REPO_ROOT, 'src', 'tool-ctl')}" "${dst}"`);
   run(`sudo chmod +x "${dst}"`);
   success(`__CTL_NAME__ installed to ${dst}`);
 }
@@ -243,7 +282,7 @@ async function main() {
   createDirs();
   installConfig();
   installStartup();
-  installCtl();
+  await installCtl();
   installUi();
 
   console.log('\n' + c.bold('='.repeat(50)));

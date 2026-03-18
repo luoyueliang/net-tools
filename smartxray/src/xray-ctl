@@ -27,6 +27,7 @@ const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
 const VERSION       = '2.1.0';
+const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
 
@@ -1023,6 +1024,64 @@ function cmdAutostart(args) {
   console.log(c.dim('  修改: xray-ctl autostart on|off'));
 }
 
+// ─── 命令：upgrade（自升级）─────────────────────────────────
+async function cmdUpgrade() {
+  console.log(c.bold('\n── xray-ctl 自升级 ─────────────────────────────'));
+  console.log(c.dim(`  来源: GitHub Release (${GITHUB_REPO})\n`));
+
+  process.stdout.write('  查询最新版本... ');
+  let latest, latestTag;
+  try {
+    const out = run(`curl -sf --max-time 10 "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"`);
+    if (!out) { console.log(c.red('无响应，检查网络')); return; }
+    const releases = JSON.parse(out);
+    const rel = releases.find(r => r.tag_name && r.tag_name.startsWith('smartxray-v'));
+    if (!rel) { console.log(c.yellow('未找到 smartxray release，请先发布')); return; }
+    latestTag = rel.tag_name;
+    latest    = latestTag.replace('smartxray-v', '');
+  } catch (e) { console.log(c.red(`失败: ${e.message}`)); return; }
+  console.log(`最新 ${c.green('v' + latest)}`);
+
+  const parseVer = v => v.split('.').map(Number);
+  const [ra, rb, rc] = parseVer(latest);
+  const [la, lb, lc] = parseVer(VERSION);
+  const isNewer = ra > la || (ra === la && rb > lb) || (ra === la && rb === lb && rc > lc);
+  if (!isNewer) {
+    console.log(latest === VERSION ? c.green('  ✓ 已是最新版本') : c.yellow(`  ⚠ 远端 v${latest} 比当前 v${VERSION} 旧，跳过`));
+    return;
+  }
+
+  const assetName = `xray-ctl-${latest}.gz`;
+  const url    = `https://github.com/${GITHUB_REPO}/releases/download/${latestTag}/${assetName}`;
+  const tmpGz  = path.join(os.tmpdir(), assetName);
+  const tmpBin = path.join(os.tmpdir(), 'xray-ctl-new');
+
+  process.stdout.write(`  下载 ${assetName}... `);
+  try {
+    execSync(`curl -fsSL --max-time 60 -o "${tmpGz}" "${url}"`, { stdio: 'pipe' });
+  } catch (e) { console.log(c.red('失败')); console.log(c.dim(`  URL: ${url}`)); return; }
+  console.log('done');
+
+  try {
+    execSync(`gunzip -c "${tmpGz}" > "${tmpBin}"`, { stdio: 'pipe' });
+    fs.chmodSync(tmpBin, 0o755);
+    fs.unlinkSync(tmpGz);
+  } catch (e) { console.log(c.red(`✗ 解压失败: ${e.message}`)); return; }
+
+  const self = process.argv[1];
+  const bak  = `${self}.bak-v${VERSION}`;
+  try {
+    if (fs.existsSync(self)) run(`sudo cp "${self}" "${bak}"`);
+    run(`sudo mv "${tmpBin}" "${self}"`);
+    run(`sudo chmod +x "${self}"`);
+  } catch (e) { console.log(c.red(`✗ 替换失败: ${e.message}`)); return; }
+
+  console.log(c.bold('\n── 升级结果 ──────────────────────────────────'));
+  console.log(c.green('  ✓ xray-ctl 升级成功'));
+  console.log(`     ${c.yellow('v' + VERSION)} → ${c.green('v' + latest)}`);
+  console.log(c.dim(`  备份: ${bak}`));
+}
+
 // ─── help ────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
@@ -1063,6 +1122,9 @@ ${c.bold('配置')}
 ${c.bold('导出')}
   xray-ctl export             导出 mihomo proxies 片段 → ${MIHOMO_OUT}
 
+${c.bold('升级')}
+  xray-ctl upgrade            自升级 xray-ctl（从 GitHub Release）
+
 ${c.bold('Web UI')}
   xray-ctl ui                 http://127.0.0.1:${API_PORT}/
                               自助页: http://127.0.0.1:${API_PORT}/self
@@ -1079,6 +1141,7 @@ const [,, cmd, ...args] = process.argv;
     case 'restart':     cmdStop(); await new Promise(r => setTimeout(r, 800)); await cmdStart(); break;
     case 'status':      cmdStatus(); break;
     case 'reload':      cmdReload(); break;
+    case 'upgrade':     await cmdUpgrade(); break;
     case 'autostart':   cmdAutostart(args); break;
     case 'user':        cmdUser(args); break;
     case 'reality':     cmdReality(args); break;

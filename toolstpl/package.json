@@ -1,0 +1,14 @@
+{
+  "name": "__TOOL_NAME__",
+  "version": "__VERSION__",
+  "description": "__TOOL_NAME__ — TODO: 填写工具描述",
+  "main": "src/tool-ctl",
+  "scripts": {
+    "start":   "node src/tool-ctl start",
+    "pack":    "node scripts/release.js",
+    "release": "node scripts/release.js --publish"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

@@ -1,0 +1,75 @@
+name: Release smartxray
+
+# 触发：推送 smartxray-vX.Y.Z 格式 tag
+on:
+  push:
+    tags:
+      - 'smartxray-v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag:     ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#smartxray-v}"
+          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VER="${{ steps.tag.outputs.version }}"
+          BASE="https://github.com/luoyueliang/net-tools/releases/download/${TAG}"
+          printf '## smartxray v%s\n\n'               "${VER}"         > /tmp/notes.md
+          printf '### 安装（推荐）\n\n'                                >> /tmp/notes.md
+          printf '```bash\n'                                           >> /tmp/notes.md
+          printf 'VER=%s\n' "${VER}"                                   >> /tmp/notes.md
+          printf 'curl -LO %s/smartxray-installer-%s.tar.gz\n' "${BASE}" "${VER}" >> /tmp/notes.md
+          printf 'tar xzf smartxray-installer-%s.tar.gz\n' "${VER}"   >> /tmp/notes.md
+          printf 'cd smartxray-installer-%s/\n' "${VER}"              >> /tmp/notes.md
+          printf 'npm install\n'                                       >> /tmp/notes.md
+          printf 'node scripts/install.js\n'                           >> /tmp/notes.md
+          printf '```\n\n'                                             >> /tmp/notes.md
+          printf '### 自升级（已安装用户）\n\n'                         >> /tmp/notes.md
+          printf '```bash\nxray-ctl upgrade\n```\n\n'                  >> /tmp/notes.md
+          printf '> 需已安装 Node.js v16+\n'                           >> /tmp/notes.md
+          gh release create "${TAG}" \
+            --title "smartxray v${VER}" \
+            --notes-file /tmp/notes.md \
+            --repo luoyueliang/net-tools || \
+            echo "Release already exists, will upload assets to existing release"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build release assets
+        working-directory: smartxray
+        run: |
+          npm install
+          node scripts/release.js
+
+      - name: Upload all assets to Release
+        working-directory: smartxray
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VER="${{ steps.tag.outputs.version }}"
+          gh release upload "${TAG}" \
+            "dist/smartxray-installer-${VER}.tar.gz" \
+            "dist/xray-ctl-${VER}.gz" \
+            --clobber \
+            --repo luoyueliang/net-tools
