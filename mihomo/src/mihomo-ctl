@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.17';
+const VERSION     = '1.4.18';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -118,7 +118,8 @@ function resolveProxyArg() {
   const arg = P.getCurlProxyArg();
   if (arg) return arg;
   // TUN 模式下系统代理为空，但 127.0.0.1:7890 可能在监听
-  if (/127\.0\.0\.1[.:]7890/.test(run('netstat -an 2>/dev/null'))) {
+  const _ns = IS_WIN ? run('netstat -ano 2>nul') : run('netstat -an 2>/dev/null');
+  if (/127\.0\.0\.1[.:]7890/.test(_ns)) {
     return '-x "http://127.0.0.1:7890"';
   }
   return '';
@@ -474,7 +475,11 @@ const PLATFORM_ADAPTERS = {
     proxySuccessMsg(_iface) { return '✓ 系统代理已接管 → 127.0.0.1:7890 (Windows 注册表)'; },
 
     // ── DNS ──────────────────────────────────────────────────
-    checkDns1053()  { return true; }, // Windows 跳过前置检查，由 netsh 实际操作验证
+    checkDns1053() {
+      // 检查 :1053（Mihomo 默认 DNS 端口，Windows DNS Client 不占用此端口）
+      const out = run('netstat -ano 2>nul | findstr ":1053"');
+      return out.split('\n').some(l => l.includes('LISTENING'));
+    },
     getDnsServers(iface) {
       const out = run(`powershell -NoProfile -Command "(Get-DnsClientServerAddress -InterfaceAlias '${iface}' -AddressFamily IPv4).ServerAddresses -join ','"`);
       return out.trim() ? out.trim().split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -500,15 +505,22 @@ const PLATFORM_ADAPTERS = {
     printDnsStatus(iface) {
       const servers     = this.getDnsServers(iface);
       const mihomoIsDns = servers.includes('127.0.0.1');
-      const port1053    = !!run('netstat -ano 2>nul | findstr ":1053"');
+      const port1053    = this.checkDns1053();
       console.log(`  接口       : ${c.cyan(iface)}`);
       console.log(`  系统 DNS   : ${mihomoIsDns ? c.cyan('127.0.0.1') : c.dim('(DHCP / 其他)')}`);
       console.log(`  Mihomo 监听 1053 : ${port1053 ? c.green('✓') : c.red('✗')}`);
       console.log(`  接管状态 : ${(mihomoIsDns && port1053) ? c.green('已接管') : c.dim('未接管')}`);
+      try {
+        const r = run('nslookup -type=A cloudflare.com 127.0.0.1 2>nul');
+        const ok = /Address/i.test(r);
+        console.log(`  实际解析测试 : ${ok ? c.green('✓ ' + (r.match(/Address:\s*(\S+)/i)||[])[1]) : c.red('✗ 无响应')}`);
+      } catch {}
     },
     adminHint() { console.log(c.dim('  请以管理员身份运行')); },
     dnsOnSuccess(iface) {
-      console.log(c.green(`✓ DNS 已接管 → 127.0.0.1 (接口: ${iface})`));
+      console.log(c.green(`✓ DNS 已接管 → 127.0.0.1:1053 (接口: ${iface})`));
+      console.log(c.dim('  国内域名 → 阿里/腾讯 DoH (直连)'));
+      console.log(c.dim('  国外域名 → 1.1.1.1 / Google DoH (走代理)'));
       console.log(c.dim('  关闭: mihomo-ctl dns-off'));
     },
     dnsOnErrorHint(_iface) { this.adminHint(); },
@@ -1579,9 +1591,17 @@ function setTunEnable(cfgText, enable) {
 }
 
 async function cmdTunOn() {
+  // Windows：需管理员权限（WinTun 驱动）
   if (P.name === 'windows') {
-    console.log(c.yellow('⚠ tun-on 当前不支持 Windows 平台'));
-    return;
+    let isAdmin = false;
+    try { execSync('net session', { stdio: 'pipe' }); isAdmin = true; } catch {}
+    if (!isAdmin) {
+      console.log(c.bold('\n── 开启 TUN 透明代理 ─────────────────────────────'));
+      console.log(c.yellow('⚠ TUN 模式需要管理员权限'));
+      console.log(c.dim('  请使用 mihomo-ctl.bat tun-on（自动弹出 UAC）'));
+      console.log(c.dim('  或右键「以管理员身份运行」终端后执行 mihomo-ctl tun-on'));
+      return;
+    }
   }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
   const cfgText = fs.readFileSync(CONFIG, 'utf8');
@@ -1598,16 +1618,19 @@ async function cmdTunOn() {
   const newCfg = setTunEnable(cfgText, 'true');
   fs.writeFileSync(CONFIG, newCfg);
   console.log(c.bold('\n── 开启 TUN 透明代理 ─────────────────────────────'));
-  // 先停止旧进程：macOS 额外 unload LaunchAgent，Linux/Alpine 先 stop 服务
-  if (P.name === 'macos') {
-    run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
-  } else {
-    P.stopProcess();
-  }
+  // 先停止旧进程；macOS 额外 unload LaunchAgent
+  if (P.name === 'macos') run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
+  P.stopProcess();
   P.forceKill();
   await new Promise(r => setTimeout(r, 1200));
-  console.log(c.dim('  以 sudo 启动（TUN auto-route 需 root 权限）...'));
-  spawn('sudo', [BIN, '-d', CONFIG_DIR], { detached: true, stdio: 'ignore' }).unref();
+  if (P.name === 'windows') {
+    // 已是管理员：直接启动（WinTun 驱动权限由管理员保证）
+    console.log(c.dim('  以管理员权限启动（TUN 需 WinTun 驱动）...'));
+    spawn(BIN, ['-d', CONFIG_DIR], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } else {
+    console.log(c.dim('  以 sudo 启动（TUN auto-route 需 root 权限）...'));
+    spawn('sudo', [BIN, '-d', CONFIG_DIR], { detached: true, stdio: 'ignore' }).unref();
+  }
   await new Promise(r => setTimeout(r, 2000));
   if (await isRunning()) {
     fs.writeFileSync(TUN_STATE_FILE, '1');
@@ -1618,32 +1641,47 @@ async function cmdTunOn() {
     fs.writeFileSync(CONFIG, cfgText);
     P.startProcess();
     await new Promise(r => setTimeout(r, 1500));
-    console.log(c.red('✗ TUN 模式启动失败（sudo 可能需要密码）'));
-    console.log(c.dim('\n  在 /etc/sudoers 中添加免密授权 (sudo visudo):'));
-    console.log(c.cyan(`    ${os.userInfo().username} ALL=(ALL) NOPASSWD: ${BIN}`));
-    console.log(c.dim('  或手动以 root 运行:'));
-    console.log(c.cyan(`    sudo ${BIN} -d ${CONFIG_DIR}`));
+    if (P.name === 'windows') {
+      console.log(c.red('✗ TUN 模式启动失败'));
+      console.log(c.dim('  请确认：'));
+      console.log(c.dim('    1. 已安装 WinTun 驱动（mihomo Windows 版内置，或从 https://www.wintun.net 下载）'));
+      console.log(c.dim('    2. 以管理员身份运行（UAC 必须允许）'));
+      console.log(c.dim('    3. 查看日志: mihomo-ctl log-on && mihomo-ctl restart'));
+    } else {
+      console.log(c.red('✗ TUN 模式启动失败（sudo 可能需要密码）'));
+      console.log(c.dim('\n  在 /etc/sudoers 中添加免密授权 (sudo visudo):'));
+      console.log(c.cyan(`    ${os.userInfo().username} ALL=(ALL) NOPASSWD: ${BIN}`));
+      console.log(c.dim('  或手动以 root 运行:'));
+      console.log(c.cyan(`    sudo ${BIN} -d ${CONFIG_DIR}`));
+    }
   }
 }
 
 async function cmdTunOff() {
+  // Windows：需管理员权限（才能 taskkill 掉管理员进程）
   if (P.name === 'windows') {
-    console.log(c.yellow('⚠ tun-off 当前不支持 Windows 平台'));
-    return;
+    let isAdmin = false;
+    try { execSync('net session', { stdio: 'pipe' }); isAdmin = true; } catch {}
+    if (!isAdmin) {
+      console.log(c.yellow('⚠ 关闭 TUN 模式需要管理员权限'));
+      console.log(c.dim('  请使用 mihomo-ctl.bat tun-off 或以管理员身份运行'));
+      return;
+    }
   }
   let cfgText = fs.readFileSync(CONFIG, 'utf8');
   const newCfg = setTunEnable(cfgText, 'false');
   if (newCfg) fs.writeFileSync(CONFIG, newCfg);
   console.log(c.bold('\n── 关闭 TUN 透明代理 ─────────────────────────────────────────────────────────'));
-  // 杀掉 root TUN 进程（sudo pkill 覆盖 root 进程，普通 pkill 覆盖非 root 进程）
-  run(`sudo pkill -f 'mihomo -d' 2>/dev/null || pkill -f 'mihomo -d' 2>/dev/null || true`);
+  // 通过适配器停止进程，覆盖 root/admin 启动的进程
+  P.stopProcess();
+  P.forceKill();
   try { fs.unlinkSync(TUN_STATE_FILE); } catch {}
   if (P.name === 'macos') {
     // macOS：startProcess 异步不可靠，提示用户手动 start
     console.log(c.green('✓ TUN 模式已关闭'));
     console.log(c.yellow('  请等待约 10 秒后运行: mihomo-ctl start'));
   } else {
-    // Linux/Alpine：P.startProcess() 同步（systemctl/rc-service），可立即验证
+    // Linux/Alpine/Windows：startProcess() 同步可验证
     P.startProcess();
     await new Promise(r => setTimeout(r, 1000));
     if (await isRunning()) {
@@ -1906,7 +1944,8 @@ async function cmdUi(sub) {
 
   if (sub === 'open') {
     const url = 'http://127.0.0.1:9090/ui/';
-    run(`open "${url}" 2>/dev/null || xdg-open "${url}" 2>/dev/null || echo "${url}"`);
+    if (IS_WIN) run(`start "" "${url}"`);
+    else run(`open "${url}" 2>/dev/null || xdg-open "${url}" 2>/dev/null || echo "${url}"`);
     return;
   }
 
@@ -2074,10 +2113,11 @@ ${c.cyan('DNS 防污染（需管理员/sudo，macOS · FreeBSD · Linux · Alpin
   mihomo-ctl dns-on           接管 DNS → Mihomo（macOS/FreeBSD: pf+DoH · Linux/Alpine: iptables · Windows: netsh）
   mihomo-ctl dns-off          恢复系统 DNS
 
-${c.cyan('TUN 透明代理（macOS）')}
+${c.cyan('TUN 透明代理（macOS · Linux · Alpine · Windows）')}
   mihomo-ctl tun-on           开启 TUN 模式（接管所有 TCP/UDP，Telegram 等不走系统代理的 App 也能路由）
-                              需要以 sudo 运行 Mihomo（auto-route 需配置路由表）
-  mihomo-ctl tun-off          关闭 TUN 模式（恢复 LaunchAgent 系统代理模式）
+                              macOS/Linux: sudo 运行 Mihomo（auto-route 需 root 权限）
+                              Windows: 需管理员权限 + WinTun 驱动（随 Mihomo Windows 版内置）
+  mihomo-ctl tun-off          关闭 TUN 模式（恢复系统代理模式）
 
 ${c.cyan('终端临时代理（所有平台）')}
   export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890

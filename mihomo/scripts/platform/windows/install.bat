@@ -111,6 +111,8 @@ echo if /i "%%~1"=="dns-on"    set "_NEED_ADMIN=1"
 echo if /i "%%~1"=="dns-off"   set "_NEED_ADMIN=1"
 echo if /i "%%~1"=="proxy-on"  set "_NEED_ADMIN=1"
 echo if /i "%%~1"=="proxy-off" set "_NEED_ADMIN=1"
+echo if /i "%%~1"=="tun-on"    set "_NEED_ADMIN=1"
+echo if /i "%%~1"=="tun-off"   set "_NEED_ADMIN=1"
 echo if /i "%%~1"=="upgrade"   set "_NEED_ADMIN=1"
 echo if "%%_NEED_ADMIN%%"=="0" goto :run
 echo net session ^>nul 2^>^&1

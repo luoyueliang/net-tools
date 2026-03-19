@@ -125,6 +125,8 @@ if /i "%~1"=="dns-on"    set "_NEED_ADMIN=1"
 if /i "%~1"=="dns-off"   set "_NEED_ADMIN=1"
 if /i "%~1"=="proxy-on"  set "_NEED_ADMIN=1"
 if /i "%~1"=="proxy-off" set "_NEED_ADMIN=1"
+if /i "%~1"=="tun-on"    set "_NEED_ADMIN=1"
+if /i "%~1"=="tun-off"   set "_NEED_ADMIN=1"
 if /i "%~1"=="upgrade"   set "_NEED_ADMIN=1"
 if "%_NEED_ADMIN%"=="0" goto :run
 net session >nul 2>&1
@@ -143,7 +145,7 @@ $ps1 = Join-Path $InstDir 'mihomo-ctl.ps1'
 $ps1Content = @'
 $Script     = Join-Path $PSScriptRoot 'mihomo-ctl'
 $Cmd        = if ($args.Count -gt 0) { $args[0] } else { '' }
-$AdminCmds  = @('dns-on','dns-off','proxy-on','proxy-off','upgrade')
+$AdminCmds  = @('dns-on','dns-off','proxy-on','proxy-off','tun-on','tun-off','upgrade')
 if ($AdminCmds -contains $Cmd) {
     $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $IsAdmin) {
