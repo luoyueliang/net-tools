@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.2.2';
+const VERSION       = '2.2.3';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -857,14 +857,16 @@ function cleanupExpired() {
 // ─── 命令：config ────────────────────────────────────────────
 function cmdConfig(args) {
   const key = args[0], val = args[1];
-  const validKeys = ['server_ip', 'log_level'];
+  const validKeys = ['server_ip', 'log_level', 'merge_inbounds', 'use_upstream'];
 
   if (!key) {
     console.log(c.bold('\n── 设置 ──────────────────────────────────────'));
     for (const k of validKeys) console.log(`  ${k.padEnd(20)} = ${getSetting(k) || c.dim('(默认)')}`);
     console.log(c.dim('\n  修改: xray-ctl config <key> <value>'));
-    console.log(c.dim('  server_ip: xray 监听 IP（发布到客户端 / mihomo 配置）'));
-    console.log(c.dim('  log_level: debug|info|warning|error|none'));
+    console.log(c.dim('  server_ip:      xray 监听 IP（发布到客户端 / mihomo 配置）'));
+    console.log(c.dim('  log_level:      debug|info|warning|error|none'));
+    console.log(c.dim('  merge_inbounds: 1=仅替换 inbounds，保留现有 outbounds/routing/balancers（迁移现有配置用）'));
+    console.log(c.dim('  use_upstream:   1=启用上游出站转发'));
     return;
   }
   if (!validKeys.includes(key)) { console.log(c.red(`✗ 未知配置项: ${key}`)); return; }
