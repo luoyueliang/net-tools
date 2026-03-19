@@ -247,17 +247,24 @@ async function installCtl() {
   const osName  = osMap[process.platform] || 'linux';
   const ctlArch = archMap[process.arch] || 'x64';
 
-  // 1. 查询 GitHub Release 最新版本
+  // 1. 查询 GitHub Release 最新版本（semver 最大值，避免列表顺序问题）
   let ctlVer;
   try {
     const out = run(
       'curl -sf --max-time 10 ' +
-      '"https://api.github.com/repos/luoyueliang/net-tools/releases?per_page=20"'
+      '"https://api.github.com/repos/luoyueliang/net-tools/releases?per_page=50"'
     );
     if (out) {
       const rels = JSON.parse(out);
-      const rel  = rels.find(r => r.tag_name && r.tag_name.startsWith('mihomo-ctl-v'));
-      if (rel) ctlVer = rel.tag_name.replace('mihomo-ctl-v', '');
+      const parseVer = v => v.split('.').map(Number);
+      const cmpVer = (a, b) => { for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; } return 0; };
+      let best = null;
+      for (const r of rels) {
+        if (!r.tag_name || !r.tag_name.startsWith('mihomo-ctl-v')) continue;
+        const ver = r.tag_name.replace('mihomo-ctl-v', '');
+        if (!best || cmpVer(parseVer(ver), parseVer(best)) > 0) best = ver;
+      }
+      ctlVer = best || undefined;
     }
   } catch {}
 
