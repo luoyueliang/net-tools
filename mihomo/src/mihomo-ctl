@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.16';
+const VERSION     = '1.4.17';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -111,6 +111,17 @@ function apiDelete(urlPath) {
 function run(cmd) {
   try { return execSync(cmd, { encoding: 'utf8', shell: IS_WIN ? 'cmd.exe' : '/bin/sh' }).trim(); }
   catch { return ''; }
+}
+
+// 解析最佳下载代理：优先读系统代理，其次检测 Mihomo HTTP 代理 7890（TUN 模式）
+function resolveProxyArg() {
+  const arg = P.getCurlProxyArg();
+  if (arg) return arg;
+  // TUN 模式下系统代理为空，但 127.0.0.1:7890 可能在监听
+  if (/127\.0\.0\.1[.:]7890/.test(run('netstat -an 2>/dev/null'))) {
+    return '-x "http://127.0.0.1:7890"';
+  }
+  return '';
 }
 
 // ─── 平台适配器注册表 ─────────────────────────────────────────
@@ -1240,7 +1251,7 @@ async function cmdUpgradeMihomo() {
   process.stdout.write('  查询最新版本... ');
   let latest;
   try {
-    const out = run(`curl -sf --max-time 10 "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"`);
+    const out = run(`curl -sf --max-time 10 ${resolveProxyArg()} "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"`);
     if (!out) { console.log(c.red('获取失败，检查网络')); return; }
     latest = JSON.parse(out).tag_name;
   } catch (e) { console.log(c.red(`失败: ${e.message}`)); return; }
@@ -1260,7 +1271,7 @@ async function cmdUpgradeMihomo() {
   const wasRunning = await isRunning();
   if (wasRunning) console.log(c.green(`  ✓ 进程运行中，预下载中（代理不中断）...`));
   console.log(c.dim(`    ${url}`));
-  run(`curl -4 -L -C - --max-time 180 -o "${tmpPkg}" "${url}" 2>/dev/null`);
+  run(`curl -4 -L -C - --max-time 180 ${resolveProxyArg()} -o "${tmpPkg}" "${url}" 2>/dev/null`);
   if (!fs.existsSync(tmpPkg) || fs.statSync(tmpPkg).size < 500000) {
     console.log(c.red('✗ 下载失败或文件过小，请检查网络'));
     try { fs.unlinkSync(tmpPkg); } catch {}
@@ -1347,7 +1358,7 @@ async function cmdUpgrade() {
   process.stdout.write('  查询最新版本... ');
   let latest, latestTag;
   try {
-    const out = run(`curl -sf --max-time 10 "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=50"`);
+    const out = run(`curl -sf --max-time 10 ${resolveProxyArg()} "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=50"`);
     if (!out) { console.log(c.red('无响应，检查网络')); return; }
     const releases = JSON.parse(out);
     const parseVF = v => v.split('.').map(Number);
@@ -1387,7 +1398,7 @@ async function cmdUpgrade() {
 
   process.stdout.write(`  下载 ${assetName}... `);
   try {
-    execSync(`curl -fsSL --max-time 60 ${P.getCurlProxyArg()} -o "${tmpGz}" "${url}"`, { stdio: 'pipe' });
+    execSync(`curl -fsSL --max-time 60 ${resolveProxyArg()} -o "${tmpGz}" "${url}"`, { stdio: 'pipe' });
   } catch (e) {
     console.log(c.red('失败'));
     console.log(c.dim(`  URL: ${url}`));
@@ -1456,7 +1467,7 @@ async function cmdGeoUpdate() {
     const tmp = path.join(TMP, `${name}.tmp`);
     process.stdout.write(`  下载 ${name}... `);
     try {
-      run(`curl -fsSL -4 -L --max-time 60 ${P.getCurlProxyArg()} -o "${tmp}" "${url}" 2>/dev/null`);
+      run(`curl -fsSL -4 -L --max-time 60 ${resolveProxyArg()} -o "${tmp}" "${url}" 2>/dev/null`);
       if (!fs.existsSync(tmp) || fs.statSync(tmp).size < 100000) {
         console.log(c.red('✗ 下载失败或文件过小')); continue;
       }
