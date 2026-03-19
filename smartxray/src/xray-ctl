@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.2.6';
+const VERSION       = '2.3.0';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -119,8 +119,13 @@ let _db = null;
 function db() {
   if (_db) return _db;
   try {
-    const Database = require(path.join(DATA_DIR, 'node_modules', 'better-sqlite3'));
+    const { Database } = require('node-sqlite3-wasm');
     ensureDir(DATA_DIR);
+    // node-sqlite3-wasm 会创建 .lock 目录；若上次进程未能清理则残留，强制清除后再开
+    const lockDir = DB_FILE + '.lock';
+    if (fs.existsSync(lockDir)) {
+      try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+    }
     _db = new Database(DB_FILE);
     _db.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -156,10 +161,32 @@ function db() {
     if (!cols.includes('http_port'))  _db.exec('ALTER TABLE users ADD COLUMN http_port  INTEGER DEFAULT NULL');
     if (!cols.includes('uuid'))       _db.exec('ALTER TABLE users ADD COLUMN uuid       TEXT    DEFAULT NULL');
     if (!cols.includes('expires_at')) _db.exec('ALTER TABLE users ADD COLUMN expires_at TEXT    DEFAULT NULL');
+    // node-sqlite3-wasm 需要显式 close() 才能释放锁目录
+    process.on('exit', () => { try { _db.close(); } catch {} });
+
+    // node-sqlite3-wasm 的 Statement.run/get/all 只接受单个 values 参数（数组或单值），
+    // 而 better-sqlite3 接受 spread 参数。通过 monkeypatch prepare() 统一适配，
+    // 同时自动 finalize() 避免内存泄漏。
+    const _origPrepare = _db.prepare.bind(_db);
+    _db.prepare = (sql) => {
+      const _wrap = (method) => (...args) => {
+        const s = _origPrepare(sql);
+        try {
+          // 0 args → undefined (positional无参), 1 arg → 直接传, 多 args → 转数组
+          return method === 'run'
+            ? s.run(args.length <= 1 ? args[0] : args)
+            : method === 'get'
+              ? s.get(args.length <= 1 ? args[0] : args)
+              : s.all(args.length <= 1 ? args[0] : args);
+        } finally { s.finalize(); }
+      };
+      return { run: _wrap('run'), get: _wrap('get'), all: _wrap('all') };
+    };
+
     return _db;
   } catch (e) {
     console.log(c.red(`✗ SQLite 初始化失败: ${e.message}`));
-    console.log(c.dim('  请先安装依赖: cd smartxray && npm install'));
+    console.log(c.dim('  请重新安装: node scripts/install.js'));
     process.exit(1);
   }
 }
@@ -292,6 +319,15 @@ function buildConfig() {
       });
     }
   }
+
+  // 无认证 LAN 入站（由 xray-ctl lan 命令管理）
+  const lanEntries = (() => {
+    try {
+      const parsed = JSON.parse(getSetting('lan_inbounds', '[]'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  })();
+  for (const b of lanEntries) inbounds.push(b);
 
   // API inbound（本地管理用）
   inbounds.push({
@@ -924,14 +960,78 @@ function cmdConfig(args) {
   cmdReload();
 }
 
-// ─── 命令：export（导出 mihomo 配置片段）────────────────────
-function cmdExport() {
-  exportMihomoProxies();
-  console.log(c.green(`✓ mihomo proxies 片段已导出 → ${MIHOMO_OUT}`));
-  console.log(c.dim('  在 mihomo config.yaml 末尾添加:'));
-  console.log(c.cyan(`  # !include ${MIHOMO_OUT}`));
-  // 同时打印内容供直接复制
-  console.log('\n' + fs.readFileSync(MIHOMO_OUT, 'utf8'));
+// ─── 命令：lan（无认证 LAN 入站管理）────────────────────────
+function cmdLan(args) {
+  const sub = args[0];
+
+  function getLan() {
+    try {
+      const parsed = JSON.parse(getSetting('lan_inbounds', '[]'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  }
+  function setLan(arr) {
+    setSetting('lan_inbounds', JSON.stringify(arr));
+  }
+
+  if (!sub || sub === 'list') {
+    const inbounds = getLan();
+    console.log(c.bold('\n── LAN 入站（无认证）──────────────────────────────────'));
+    if (!inbounds.length) {
+      console.log(c.dim('  暂无 LAN 入站'));
+      console.log(c.dim('  添加示例: xray-ctl lan add http  192.168.0.3 7890'));
+      console.log(c.dim('            xray-ctl lan add socks 192.168.0.3 1080'));
+    } else {
+      for (const b of inbounds) {
+        console.log(`  ${c.cyan(b.protocol.padEnd(6))} ${b.listen}:${c.bold(String(b.port))}  tag=${b.tag}`);
+      }
+    }
+    console.log('');
+    return;
+  }
+
+  if (sub === 'add') {
+    const proto = (args[1] || 'http').toLowerCase();
+    const bind  = args[2];
+    const port  = parseInt(args[3]);
+    if (!bind || !port) {
+      console.log(c.red('用法: xray-ctl lan add [http|socks] <bind_ip> <port>'));
+      return;
+    }
+    if (!['http', 'socks'].includes(proto)) {
+      console.log(c.red('协议必须为 http 或 socks'));
+      return;
+    }
+    const tag = `lan-${proto}-${port}`;
+    const arr = getLan().filter(b => b.port !== port);  // 同端口覆盖
+    const entry = { tag, listen: bind, port, protocol: proto };
+    if (proto === 'socks') {
+      entry.settings = { auth: 'noauth', udp: true };
+      entry.sniffing = { enabled: true, destOverride: ['http', 'tls'] };
+    } else {
+      entry.settings = {};
+    }
+    arr.push(entry);
+    setLan(arr);
+    cmdReload();
+    console.log(c.green(`✓ LAN ${proto.toUpperCase()} 入站已添加: ${bind}:${port}（无认证）`));
+    return;
+  }
+
+  if (sub === 'del' || sub === 'remove') {
+    const key = args[1];
+    if (!key) { console.log(c.red('用法: xray-ctl lan del <tag|port>')); return; }
+    const arr = getLan();
+    const idx = arr.findIndex(b => b.tag === key || String(b.port) === key);
+    if (idx < 0) { console.log(c.red(`✗ 未找到: ${key}`)); return; }
+    const removed = arr.splice(idx, 1)[0];
+    setLan(arr);
+    cmdReload();
+    console.log(c.green(`✓ LAN 入站已删除: ${removed.tag} (${removed.listen}:${removed.port})`));
+    return;
+  }
+
+  console.log(c.dim('用法: xray-ctl lan [list | add [http|socks] <IP> <端口> | del <tag|端口>]'));
 }
 
 // ─── 命令：firewall ──────────────────────────────────────────
@@ -1393,29 +1493,31 @@ async function cmdUpgrade() {
     return;
   }
 
-  const assetName = `xray-ctl-${latest}.gz`;
-  const url    = `https://github.com/${GITHUB_REPO}/releases/download/${latestTag}/${assetName}`;
-  const tmpGz  = path.join(os.tmpdir(), assetName);
-  const tmpBin = path.join(os.tmpdir(), 'xray-ctl-new');
+  // bundle 模式：下载 xray-ctl-bundle-{ver}.tar.gz 并更新 /usr/local/lib/smartxray/
+  const LIB_DIR   = '/usr/local/lib/smartxray';
+  const assetName = `xray-ctl-bundle-${latest}.tar.gz`;
+  const url       = `https://github.com/${GITHUB_REPO}/releases/download/${latestTag}/${assetName}`;
+  const tmpTar    = path.join(os.tmpdir(), assetName);
+  const tmpExtDir = path.join(os.tmpdir(), `xray-ctl-bundle-${latest}`);
 
   process.stdout.write(`  下载 ${assetName}... `);
   try {
-    execSync(`curl -fsSL --max-time 60 -o "${tmpGz}" "${url}"`, { stdio: 'pipe' });
+    execSync(`curl -fsSL --max-time 60 -o "${tmpTar}" "${url}"`, { stdio: 'pipe' });
   } catch (e) { console.log(c.red('失败')); console.log(c.dim(`  URL: ${url}`)); return; }
   console.log('done');
 
   try {
-    execSync(`gunzip -c "${tmpGz}" > "${tmpBin}"`, { stdio: 'pipe' });
-    fs.chmodSync(tmpBin, 0o755);
-    fs.unlinkSync(tmpGz);
+    fs.mkdirSync(tmpExtDir, { recursive: true });
+    execSync(`tar xzf "${tmpTar}" -C "${tmpExtDir}"`, { stdio: 'pipe' });
+    fs.rmSync(tmpTar, { force: true });
   } catch (e) { console.log(c.red(`✗ 解压失败: ${e.message}`)); return; }
 
-  const self = process.argv[1];
-  const bak  = `${self}.bak-v${VERSION}`;
+  // 备份旧 bundle 目录
+  const bak = `${LIB_DIR}.bak-v${VERSION}`;
   try {
-    if (fs.existsSync(self)) run(`sudo cp "${self}" "${bak}"`);
-    run(`sudo mv "${tmpBin}" "${self}"`);
-    run(`sudo chmod +x "${self}"`);
+    if (fs.existsSync(LIB_DIR)) run(`sudo cp -r "${LIB_DIR}" "${bak}"`);
+    run(`sudo sh -c 'mkdir -p "${LIB_DIR}" && cp -r "${tmpExtDir}/." "${LIB_DIR}/"'`);
+    fs.rmSync(tmpExtDir, { recursive: true, force: true });
   } catch (e) { console.log(c.red(`✗ 替换失败: ${e.message}`)); return; }
 
   console.log(c.bold('\n── 升级结果 ──────────────────────────────────'));
@@ -1496,6 +1598,7 @@ const [,, cmd, ...args] = process.argv;
     case 'reality':     cmdReality(args); break;
     case 'selfservice': cmdSelfservice(args); break;
     case 'config':      cmdConfig(args); break;
+    case 'lan':         cmdLan(args); break;
     case 'firewall':    cmdFirewall(args); break;
     case 'export':      cmdExport(); break;
     case 'ui':          startApiServer(); console.log(c.green(`✓ Web UI 已启动 → http://127.0.0.1:${API_PORT}/`)); break;

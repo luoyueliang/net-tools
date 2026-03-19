@@ -83,6 +83,7 @@ const user       = run('whoami');
 const configDir  = `${HOME}/.config/smartxray`;
 const logsDir    = path.join(configDir, 'logs');
 const binDir     = '/usr/local/bin';
+const LIB_DIR    = '/usr/local/lib/smartxray';  // bundle 安装目录
 const XRAY_BIN   = path.join(binDir, 'xray');
 const CTL_BIN    = path.join(binDir, 'xray-ctl');
 
@@ -95,13 +96,16 @@ function checkNode() {
 
 // ── Step 2: Install npm dependencies ─────────────────────────────
 function installDeps() {
-  const nm = path.join(REPO_ROOT, 'node_modules', 'better-sqlite3');
-  if (fs.existsSync(nm)) { success('better-sqlite3 already installed'); return; }
-  info('Installing npm dependencies (better-sqlite3)...');
+  // 使用 bundle 模式时无需 npm install
+  if (fs.existsSync(path.join(REPO_ROOT, 'bundle', 'index.js'))) {
+    info('检测到 bundle/，跳过 npm install');
+    return;
+  }
+  info('Installing npm dependencies...');
   try {
     execSync('npm install --omit=dev', { cwd: REPO_ROOT, stdio: 'inherit' });
     success('npm install done');
-  } catch { error('npm install failed — install manually: cd smartxray && npm install'); }
+  } catch { error('npm install failed — install manually: npm install --omit=dev'); }
 }
 
 // ── Step 3: Download & install xray binary ───────────────────────
@@ -209,10 +213,8 @@ function installStartup() {
   }
 }
 
-// ── Step 6: Install xray-ctl ─────────────────────────────────────
+// ── Step 6: Install xray-ctl (bundle mode) ───────────────────────
 async function installCtl() {
-  const dst = path.join(binDir, 'xray-ctl');
-
   // 1. 查询 GitHub Release 最新版本
   let ctlVer;
   try {
@@ -227,40 +229,71 @@ async function installCtl() {
     }
   } catch {}
 
-  // 2. 尝试从 GitHub Release 下载
+  // 2. 尝试从 GitHub Release 下载 bundle tar
+  let bundleSrc = null;
   if (ctlVer) {
-    const assetName = `xray-ctl-${ctlVer}.gz`;
-    const url       = `https://github.com/luoyueliang/net-tools/releases/download/smartxray-v${ctlVer}/${assetName}`;
-    const tmpGz     = path.join(os.tmpdir(), assetName);
-    const tmpBin    = path.join(os.tmpdir(), 'xray-ctl-download');
+    const assetName  = `xray-ctl-bundle-${ctlVer}.tar.gz`;
+    const url        = `https://github.com/luoyueliang/net-tools/releases/download/smartxray-v${ctlVer}/${assetName}`;
+    const tmpTar     = path.join(os.tmpdir(), assetName);
+    const tmpExtract = path.join(os.tmpdir(), `xray-ctl-bundle-${ctlVer}`);
 
-    info(`Downloading xray-ctl v${ctlVer} from GitHub Release...`);
+    info(`Downloading xray-ctl bundle v${ctlVer}...`);
     try {
-      run(`curl -fsSL --max-time 60 -o "${tmpGz}" "${url}"`);
-      run(`gunzip -c "${tmpGz}" > "${tmpBin}" && chmod +x "${tmpBin}"`);
-      run(`sudo mv "${tmpBin}" "${dst}"`);
-      try { fs.unlinkSync(tmpGz); } catch {}
-      success(`xray-ctl v${ctlVer} installed to ${dst}`);
-      return;
+      run(`curl -fsSL --max-time 60 -o "${tmpTar}" "${url}"`);
+      fs.mkdirSync(tmpExtract, { recursive: true });
+      run(`tar xzf "${tmpTar}" -C "${tmpExtract}"`);
+      try { fs.unlinkSync(tmpTar); } catch {}
+      bundleSrc = tmpExtract;
     } catch (e) {
       warn(`GitHub Release download failed: ${e.message}`);
-      warn('Falling back to local source copy...');
     }
   } else {
-    warn('No smartxray release found on GitHub, using local source copy');
+    warn('GitHub 上未找到 smartxray release，使用本地 bundle/');
   }
 
-  // 3. 回退：从本地 src/xray-ctl 复制
-  try {
-    execSync(`sudo cp "${path.join(REPO_ROOT, 'src', 'xray-ctl')}" "${dst}" && sudo chmod 755 "${dst}"`, { stdio: 'pipe' });
-    success(`xray-ctl installed to ${dst}`);
-  } catch {
-    const local = path.join(HOME, '.local/bin/xray-ctl');
-    fs.mkdirSync(path.dirname(local), { recursive: true });
-    fs.copyFileSync(path.join(REPO_ROOT, 'src', 'xray-ctl'), local);
-    fs.chmodSync(local, 0o755);
-    success(`xray-ctl installed to ${local} (no sudo)`);
+  // 3. 回退：使用安装包内的本地 bundle/
+  if (!bundleSrc) {
+    const localBundle = path.join(REPO_ROOT, 'bundle');
+    if (fs.existsSync(path.join(localBundle, 'index.js'))) {
+      info('Using local bundle/ from installer package');
+      bundleSrc = localBundle;
+    } else {
+      // 最终回退：旧版 src/xray-ctl 脚本（legacy）
+      warn('未找到 bundle 来源，回退到 legacy src/xray-ctl 脚本模式...');
+      try {
+        const legacySrc = path.join(REPO_ROOT, 'src', 'xray-ctl');
+        execSync(`sudo cp "${legacySrc}" "${CTL_BIN}" && sudo chmod 755 "${CTL_BIN}"`, { stdio: 'pipe' });
+        success(`xray-ctl installed to ${CTL_BIN} (legacy mode)`);
+      } catch {
+        const local = path.join(HOME, '.local/bin/xray-ctl');
+        fs.mkdirSync(path.dirname(local), { recursive: true });
+        fs.copyFileSync(path.join(REPO_ROOT, 'src', 'xray-ctl'), local);
+        fs.chmodSync(local, 0o755);
+        success(`xray-ctl installed to ${local} (legacy mode, no sudo)`);
+      }
+      return;
+    }
   }
+
+  // 4. 安装 bundle 到 /usr/local/lib/smartxray/
+  run(`sudo mkdir -p "${LIB_DIR}"`);
+  // 使用 find+cp 确保 WASM 等文件全部复制
+  run(`sudo sh -c 'cp -r "${bundleSrc}/." "${LIB_DIR}/"'`);
+
+  // 5. 创建 shim 脚本 /usr/local/bin/xray-ctl
+  const shimContent = `#!/bin/sh\nexec node "${LIB_DIR}/index.js" "$@"\n`;
+  const tmpShim = path.join(os.tmpdir(), 'xray-ctl-shim');
+  fs.writeFileSync(tmpShim, shimContent);
+  run(`sudo install -m 755 "${tmpShim}" "${CTL_BIN}"`);
+  try { fs.unlinkSync(tmpShim); } catch {}
+
+  // 6. 清理临时解压目录
+  if (bundleSrc !== path.join(REPO_ROOT, 'bundle') && bundleSrc.startsWith(os.tmpdir())) {
+    try { fs.rmSync(bundleSrc, { recursive: true, force: true }); } catch {}
+  }
+
+  success(`xray-ctl bundle installed to ${LIB_DIR}`);
+  success(`xray-ctl shim installed to ${CTL_BIN}`);
 }
 
 // ── Step 7: Install Web UI ────────────────────────────────────────

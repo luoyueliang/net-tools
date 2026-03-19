@@ -1,6 +1,6 @@
 {
   "name": "smartxray",
-  "version": "2.1.0",
+  "version": "2.3.0",
   "description": "Xray server manager with SQLite, dynamic config, firewall & Web UI",
   "main": "src/xray-ctl",
   "scripts": {
@@ -9,10 +9,13 @@
     "release": "node scripts/release.js --publish"
   },
   "dependencies": {
-    "better-sqlite3": "^9.4.3",
+    "node-sqlite3-wasm": "^0.8.11",
     "nodemailer": "^6.9.9"
   },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  },
   "engines": {
-    "node": ">=16"
+    "node": ">=18"
   }
 }

@@ -27,9 +27,10 @@ const log = s => console.log(c.b('» ') + s);
 const die = s => { console.error(c.r('✗ ') + s); process.exit(1); };
 
 // ── 路径 ─────────────────────────────────────────────────────────────────────
-const rootDir  = path.join(__dirname, '..');
-const srcFile  = path.join(rootDir, 'src', 'xray-ctl');
-const distDir  = path.join(rootDir, 'dist');
+const rootDir   = path.join(__dirname, '..');
+const srcFile   = path.join(rootDir, 'src', 'xray-ctl');
+const distDir   = path.join(rootDir, 'dist');
+const bundleDir = path.join(distDir, 'bundle');  // ncc 输出目录
 
 // ── CLI 参数 ──────────────────────────────────────────────────────────────────
 const PUBLISH = process.argv.includes('--publish');
@@ -46,19 +47,56 @@ console.log('─'.repeat(52));
 log(`smartxray release.js — v${VERSION}`);
 console.log('─'.repeat(52));
 
-// ── Step 1: gzip xray-ctl → dist/xray-ctl-{ver}.gz ──────────────────────────
-fs.mkdirSync(distDir, { recursive: true });
-const GZ_FILE = path.join(distDir, `xray-ctl-${VERSION}.gz`);
-log(`打包 ${path.basename(GZ_FILE)}...`);
-if (fs.existsSync(GZ_FILE)) fs.rmSync(GZ_FILE, { force: true });
-const srcBuf  = fs.readFileSync(srcFile);
-const gzipped = zlib.gzipSync(srcBuf, { level: 9 });
-fs.writeFileSync(GZ_FILE, gzipped);
-const rawKB = (srcBuf.length / 1024).toFixed(0);
-const gzKB  = (gzipped.length / 1024).toFixed(0);
-ok(`${path.basename(GZ_FILE)}  (${rawKB} KB → ${gzKB} KB gz)`);
+// ── Step 1: npm install（确保本地 deps 齐全）─────────────────────────────────
+log('npm install (确保依赖就绪)...');
+try {
+  execSync('npm install', { cwd: rootDir, stdio: 'pipe' });
+  ok('npm install done');
+} catch (e) { die('npm install failed: ' + e.message); }
 
-// ── Step 2: installer tar.gz ──────────────────────────────────────────────────
+// ── Step 2: ncc bundle → dist/bundle/ ────────────────────────────────────────
+fs.mkdirSync(distDir, { recursive: true });
+if (fs.existsSync(bundleDir)) fs.rmSync(bundleDir, { recursive: true, force: true });
+
+const nccBin = path.join(rootDir, 'node_modules', '.bin', 'ncc');
+if (!fs.existsSync(nccBin)) die('找不到 ncc，请确认 @vercel/ncc 已安装 (npm install)');
+
+log('ncc build → dist/bundle/ ...');
+try {
+  execSync(`"${nccBin}" build "${srcFile}" -o "${bundleDir}" --no-cache -q`, {
+    cwd: rootDir, stdio: 'pipe',
+  });
+} catch (e) { die('ncc build 失败: ' + (e.stderr?.toString() || e.message)); }
+
+const bundleFiles = fs.readdirSync(bundleDir);
+let totalKB = 0;
+for (const f of bundleFiles) {
+  const s = fs.statSync(path.join(bundleDir, f)).size;
+  totalKB += s / 1024;
+  ok(`  bundle/${f}  (${(s / 1024).toFixed(0)} KB)`);
+}
+
+// ncc 不会自动复制 .wasm 文件，需手动补齐
+const wasmSrc = path.join(rootDir, 'node_modules', 'node-sqlite3-wasm', 'dist', 'node-sqlite3-wasm.wasm');
+if (fs.existsSync(wasmSrc)) {
+  const wasmDst = path.join(bundleDir, 'node-sqlite3-wasm.wasm');
+  fs.copyFileSync(wasmSrc, wasmDst);
+  const wasmKB = fs.statSync(wasmDst).size / 1024;
+  totalKB += wasmKB;
+  ok(`  bundle/node-sqlite3-wasm.wasm  (${wasmKB.toFixed(0)} KB)  [copied from node_modules]`);
+} else {
+  console.error('⚠ node-sqlite3-wasm.wasm not found — SQLite will fail at runtime!');
+}
+
+ok(`ncc bundle 完成 — 共 ${totalKB.toFixed(0)} KB`);
+
+// ── Step 3: xray-ctl-bundle-{ver}.tar.gz（独立 bundle 包，供直接部署）────────
+const BUNDLE_TAR = path.join(distDir, `xray-ctl-bundle-${VERSION}.tar.gz`);
+if (fs.existsSync(BUNDLE_TAR)) fs.rmSync(BUNDLE_TAR, { force: true });
+execSync(`tar czf "${BUNDLE_TAR}" -C "${bundleDir}" .`, { stdio: 'pipe' });
+ok(`${path.basename(BUNDLE_TAR)}  (${(fs.statSync(BUNDLE_TAR).size / 1024).toFixed(0)} KB gz)   ← 部署用`);
+
+// ── Step 4: installer tar.gz（含 bundle/ + scripts/ + config/ + ui/）──────────
 const installerName = `smartxray-installer-${VERSION}`;
 const installerTar  = path.join(distDir, `${installerName}.tar.gz`);
 const pkgDir        = path.join(distDir, '_pkg', installerName);
@@ -80,17 +118,14 @@ function copyDir(src, dst, exclude = []) {
   }
 }
 
-// scripts/（排除 release.js 本身）、config/、ui/、src/xray-ctl、package.json
+// scripts/（排除 release.js 本身）、config/、ui/、bundle/（ncc 打包结果）
 copyDir(path.join(rootDir, 'scripts'), path.join(pkgDir, 'scripts'), ['release.js']);
 copyDir(path.join(rootDir, 'config'),  path.join(pkgDir, 'config'));
 if (fs.existsSync(path.join(rootDir, 'ui'))) {
   copyDir(path.join(rootDir, 'ui'), path.join(pkgDir, 'ui'));
 }
-fs.mkdirSync(path.join(pkgDir, 'src'), { recursive: true });
-fs.copyFileSync(srcFile, path.join(pkgDir, 'src', 'xray-ctl'));
-fs.chmodSync(path.join(pkgDir, 'src', 'xray-ctl'), 0o755);
-// package.json 是 better-sqlite3 安装所需的
-fs.copyFileSync(path.join(rootDir, 'package.json'), path.join(pkgDir, 'package.json'));
+// bundle/ 替代原来的 src/ + package.json（install.js 会从 bundle/ 安装）
+copyDir(bundleDir, path.join(pkgDir, 'bundle'));
 
 if (fs.existsSync(installerTar)) fs.rmSync(installerTar, { force: true });
 execSync(
@@ -100,18 +135,18 @@ execSync(
 fs.rmSync(path.join(distDir, '_pkg'), { recursive: true, force: true });
 
 const tarKB = (fs.statSync(installerTar).size / 1024).toFixed(0);
-ok(`${path.basename(installerTar)}  (${tarKB} KB)`);
+ok(`${path.basename(installerTar)}  (${tarKB} KB)   ← 安装用`);
 
-// ── Step 3: manifest ──────────────────────────────────────────────────────────
+// ── Step 5: manifest ──────────────────────────────────────────────────────────
 const manifest = {
-  version:   VERSION,
-  built_at:  new Date().toISOString(),
-  gz_asset:  path.basename(GZ_FILE),
-  installer: path.basename(installerTar),
+  version:    VERSION,
+  built_at:   new Date().toISOString(),
+  bundle_tar: path.basename(BUNDLE_TAR),
+  installer:  path.basename(installerTar),
 };
 fs.writeFileSync(path.join(distDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
-// ── Step 4: 可选发布到 GitHub Release ─────────────────────────────────────────
+// ── Step 6: 可选发布到 GitHub Release ─────────────────────────────────────────
 if (PUBLISH) {
   console.log();
   log('发布到 GitHub Release...');
@@ -135,16 +170,16 @@ if (PUBLISH) {
   }
 
   execSync(
-    `gh release upload "${tag}" "${installerTar}" "${GZ_FILE}" --clobber --repo luoyueliang/net-tools`,
+    `gh release upload "${tag}" "${installerTar}" "${BUNDLE_TAR}" --clobber --repo luoyueliang/net-tools`,
     { stdio: 'inherit' }
   );
-  ok(`已上传: ${path.basename(installerTar)}, ${path.basename(GZ_FILE)}`);
+  ok(`已上传: ${path.basename(installerTar)}, ${path.basename(BUNDLE_TAR)}`);
 }
 
 // ── 完成 ──────────────────────────────────────────────────────────────────────
 console.log();
 console.log('─'.repeat(52));
-ok(`dist/${path.basename(GZ_FILE)}  (${gzKB} KB gz)   ← 自升级用`);
+ok(`dist/${path.basename(BUNDLE_TAR)}   ← bundle（自升级用）`);
 ok(`dist/${path.basename(installerTar)}  (${tarKB} KB)   ← 安装用`);
 if (!PUBLISH) {
   console.log(c.y(`发布: node scripts/release.js --publish`));
