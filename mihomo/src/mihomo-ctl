@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.18';
+const VERSION     = '1.4.19';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -113,6 +113,20 @@ function run(cmd) {
   catch { return ''; }
 }
 
+// Windows 自动提权重运当前命令（UAC）
+function winElevate(cmdName) {
+  const exe    = process.execPath.replace(/\\/g, '\\\\');
+  const script = process.argv[1].replace(/\\/g, '\\\\');
+  try {
+    execSync(
+      `powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '${exe}' -ArgumentList '${script} ${cmdName}' -Wait"`,
+      { stdio: 'inherit' }
+    );
+  } catch {
+    console.log(c.yellow('⚠ UAC 已取消或超时，请以管理员身份重试'));
+  }
+}
+
 // 解析最佳下载代理：优先读系统代理，其次检测 Mihomo HTTP 代理 7890（TUN 模式）
 function resolveProxyArg() {
   const arg = P.getCurlProxyArg();
@@ -146,7 +160,7 @@ function createServiceAdapter(name, stopCmd, startCmd) {
     // ── 进程 ──────────────────────────────────────────────────
     stopProcess()  { run(stopCmd);  },
     startProcess() { run(startCmd); },
-    forceKill()    { run(`pkill -KILL -f 'mihomo -d' 2>/dev/null || true`); },
+    forceKill()    { run(`sudo pkill -KILL -f 'mihomo -d' 2>/dev/null || pkill -KILL -f 'mihomo -d' 2>/dev/null || true`); },
     getPid()       { return run("pgrep -f 'mihomo -d'"); },
     killHint()     { return 'sudo kill $(pgrep -f "mihomo -d")'; },
     port7890Ok()   { return !!run('ss -tlnp 2>/dev/null | grep :7890 || lsof -i :7890 -sTCP:LISTEN -n 2>/dev/null | grep mihomo'); },
@@ -1591,17 +1605,11 @@ function setTunEnable(cfgText, enable) {
 }
 
 async function cmdTunOn() {
-  // Windows：需管理员权限（WinTun 驱动）
+  // Windows：需管理员权限（WinTun 驱动）—— 非管理员时自动 UAC 提权重运
   if (P.name === 'windows') {
     let isAdmin = false;
     try { execSync('net session', { stdio: 'pipe' }); isAdmin = true; } catch {}
-    if (!isAdmin) {
-      console.log(c.bold('\n── 开启 TUN 透明代理 ─────────────────────────────'));
-      console.log(c.yellow('⚠ TUN 模式需要管理员权限'));
-      console.log(c.dim('  请使用 mihomo-ctl.bat tun-on（自动弹出 UAC）'));
-      console.log(c.dim('  或右键「以管理员身份运行」终端后执行 mihomo-ctl tun-on'));
-      return;
-    }
+    if (!isAdmin) { winElevate('tun-on'); return; }
   }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
   const cfgText = fs.readFileSync(CONFIG, 'utf8');
@@ -1658,15 +1666,11 @@ async function cmdTunOn() {
 }
 
 async function cmdTunOff() {
-  // Windows：需管理员权限（才能 taskkill 掉管理员进程）
+  // Windows：需管理员权限（taskkill 掉管理员进程）—— 非管理员时自动 UAC 提权重运
   if (P.name === 'windows') {
     let isAdmin = false;
     try { execSync('net session', { stdio: 'pipe' }); isAdmin = true; } catch {}
-    if (!isAdmin) {
-      console.log(c.yellow('⚠ 关闭 TUN 模式需要管理员权限'));
-      console.log(c.dim('  请使用 mihomo-ctl.bat tun-off 或以管理员身份运行'));
-      return;
-    }
+    if (!isAdmin) { winElevate('tun-off'); return; }
   }
   let cfgText = fs.readFileSync(CONFIG, 'utf8');
   const newCfg = setTunEnable(cfgText, 'false');
