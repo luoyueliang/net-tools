@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.13';
+const VERSION     = '1.4.14';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -131,7 +131,8 @@ function createServiceAdapter(name, stopCmd, startCmd) {
     proxySuccessMsg()       { return '✓ 系统代理已接管 → 127.0.0.1:7890'; },
 
     // ── DNS ──────────────────────────────────────────────────
-    checkDns1053()  { return !!run('lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo'); },
+    // ss -unl 不需要 root 权限，可见所有 UDP 监听端口（含 root 进程）
+    checkDns1053()  { return !!run('ss -unl 2>/dev/null | grep :1053 || lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo'); },
     getDnsServers() { return []; },
     setDnsToMihomo() { throw new Error('不支持'); },
     async restoreAll() { throw new Error('平台不支持 DNS 管理'); },
@@ -179,13 +180,14 @@ const PLATFORM_ADAPTERS = {
     // ── 进程 ──────────────────────────────────────────────────
     stopProcess() {
       run(`launchctl unload "${PLIST}" 2>/dev/null || true`);
-      run(`pkill -f 'mihomo -d' 2>/dev/null || true`);
+      // sudo pkill 优先：覆盖 tun-on 以 root 启动的进程；普通 pkill 作为 fallback
+      run(`sudo pkill -f 'mihomo -d' 2>/dev/null || pkill -f 'mihomo -d' 2>/dev/null || true`);
     },
     startProcess() {
       if (fs.existsSync(PLIST)) run(`launchctl load "${PLIST}" 2>/dev/null || true`);
       else exec(`${BIN} -d "${CONFIG_DIR}" >> "${LOG}" 2>&1 &`);
     },
-    forceKill()  { run(`pkill -KILL -f 'mihomo -d' 2>/dev/null || true`); },
+    forceKill()  { run(`sudo pkill -KILL -f 'mihomo -d' 2>/dev/null || pkill -KILL -f 'mihomo -d' 2>/dev/null || true`); },
     getPid()     { return run("pgrep -f 'mihomo -d'"); },
     killHint()   { return 'sudo kill $(pgrep -f "mihomo -d")'; },
     port7890Ok() {
@@ -271,7 +273,11 @@ const PLATFORM_ADAPTERS = {
     proxySuccessMsg(iface) { return `✓ 系统代理已接管 → 127.0.0.1:7890 (${iface})`; },
 
     // ── DNS ──────────────────────────────────────────────────
-    checkDns1053() { return !!run('lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo'); },
+    // netstat -an 不需要 root 权限，可见所有进程的端口（含 tun-on 以 root 启动的进程）
+    checkDns1053() {
+      return !!run('netstat -an 2>/dev/null | grep "127\.0\.0\.1\.1053"') ||
+             !!run('lsof -i UDP:1053 -n -P 2>/dev/null | grep -i mihomo');
+    },
     getDnsServers(iface) {
       const out = run(`networksetup -getdnsservers "${iface}" 2>/dev/null`);
       return out.trim().split('\n').map(l => l.trim()).filter(l => l && !/aren't|There/i.test(l));
