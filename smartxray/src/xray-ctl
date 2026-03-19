@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.2.1';
+const VERSION       = '2.2.2';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -119,7 +119,7 @@ let _db = null;
 function db() {
   if (_db) return _db;
   try {
-    const Database = require('better-sqlite3');
+    const Database = require(path.join(DATA_DIR, 'node_modules', 'better-sqlite3'));
     ensureDir(DATA_DIR);
     _db = new Database(DB_FILE);
     _db.exec(`
