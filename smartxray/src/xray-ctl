@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.2.5';
+const VERSION       = '2.2.6';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -174,23 +174,19 @@ function setSetting(key, value) {
 }
 
 // ─── Xray 进程管理 ───────────────────────────────────────────
-function isRunning() {
-  const pid = readPid();
-  if (!pid) return false;
-  try { process.kill(pid, 0); return true; }
-  catch { return false; }
-}
-
 const OPENRC_PID = '/run/smartxray.pid';  // OpenRC 管理时写入的 PID 文件
 
 function readPid() {
-  // 先尝试 xray-ctl 自己维护的 PID 文件，无效时 fallback 到 OpenRC PID 文件
+  // 依次尝试 xray-ctl 自身 PID 文件和 OpenRC PID 文件，返回实际在运行的 PID
   for (const f of [PID_FILE, OPENRC_PID]) {
     try {
       const pid = parseInt(fs.readFileSync(f, 'utf8').trim(), 10);
-      if (pid && isRunning(pid)) {
-        if (f !== PID_FILE) writePidFiles(pid);  // 同步到自己的 PID 文件
-        return pid;
+      if (pid) {
+        try {
+          process.kill(pid, 0);          // 仅探测是否存在，不发实际信号
+          if (f !== PID_FILE) writePidFiles(pid);  // 从 fallback 读到时同步写回
+          return pid;
+        } catch { /**/ }
       }
     } catch { /**/ }
   }
@@ -200,10 +196,14 @@ function readPid() {
 function writePidFiles(pid) {
   ensureDir(DATA_DIR);
   fs.writeFileSync(PID_FILE, String(pid));
-  try { fs.writeFileSync(OPENRC_PID, String(pid)); } catch { /**/ }  // 同步到 OpenRC
+  try { fs.writeFileSync(OPENRC_PID, String(pid)); } catch { /**/ }
 }
 
 function writePid(pid) { writePidFiles(pid); }
+
+function isRunning() {
+  return readPid() !== null;  // readPid() 已含存活检查
+}
 
 // ─── 端口分配 ────────────────────────────────────────────────
 function allocPort(min, max) {
