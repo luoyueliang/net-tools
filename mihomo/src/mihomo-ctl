@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.14';
+const VERSION     = '1.4.15';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -788,8 +788,11 @@ PLATFORM_ADAPTERS.freebsd = createFreeBSDAdapter('freebsd', 'sudo service mihomo
 const P = PLATFORM_ADAPTERS[detectPlatform()] || PLATFORM_ADAPTERS.linux;
 
 async function isRunning() {
-  try { await apiGet('/version'); return true; }
-  catch { return false; }
+  try {
+    const res = await apiGet('/version');
+    // 验证是真正的 Mihomo API（ClashX 等其他程序占用 9090 时返回 401 {"message":"Unauthorized"}）
+    return typeof res === 'object' && typeof res.version === 'string' && res.version.length > 0;
+  } catch { return false; }
 }
 
 // 异步获取出口 IP（并发执行，不阻塞其他渲染）
