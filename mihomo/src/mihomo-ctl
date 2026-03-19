@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.12';
+const VERSION     = '1.4.13';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -1120,8 +1120,12 @@ async function cmdDnsOn() {
   }
   if (!(await isRunning())) { console.log(c.red('请先启动 Mihomo: mihomo-ctl start')); return; }
   if (!P.checkDns1053()) {
-    console.log(c.red('✗ Mihomo DNS 未在 127.0.0.1:1053 监听，请检查配置后重启'));
-    console.log(c.dim('  mihomo-ctl restart'));
+    console.log(c.red('✗ Mihomo DNS 未在 127.0.0.1:1053 监听'));
+    console.log(c.dim('  请确认 ~/.config/mihomo/config.yaml 中包含：'));
+    console.log(c.dim('    dns:'));
+    console.log(c.dim('      enable: true'));
+    console.log(c.dim('      listen: 127.0.0.1:1053'));
+    console.log(c.dim('  然后重启: mihomo-ctl restart'));
     return;
   }
   const iface = P.getActiveInterface();
