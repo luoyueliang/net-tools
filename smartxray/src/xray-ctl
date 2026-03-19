@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.2.3';
+const VERSION       = '2.2.4';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -713,13 +713,15 @@ function cmdReality(args) {
     const sni     = dest.split(':')[0];
     const shortId = randHex(8);
 
-    // 生成 x25519 密鑰对
+    // 生成 x25519 密鑰对（兼容旧版 "Private key:" 和新版 v26+ "PrivateKey: / Password:" 格式）
     let keyOut;
     try { keyOut = execSync(`${BIN} x25519`, { encoding: 'utf8' }); }
     catch (e) { console.log(c.red('✗ xray x25519 失败: ' + e.message)); return; }
-    const priv = (keyOut.match(/Private key:\s*(\S+)/) || [])[1];
-    const pub  = (keyOut.match(/Public key:\s*(\S+)/)  || [])[1];
-    if (!priv || !pub) { console.log(c.red('✗ 解析密鑰失败')); return; }
+    // v26+: "PrivateKey: xxx" + "Password: xxx"（Password 为公钥）
+    // v1.x: "Private key: xxx" + "Public key: xxx"
+    const priv = keyOut.match(/PrivateKey:\s*(\S+)/)?.[1] || keyOut.match(/Private key:\s*(\S+)/i)?.[1];
+    const pub  = keyOut.match(/Password:\s*(\S+)/)?.[1]   || keyOut.match(/Public key:\s*(\S+)/i)?.[1];
+    if (!priv || !pub) { console.log(c.red('✗ 解析密鑰失败，xray x25519 输出:\n' + keyOut)); return; }
 
     setSetting('reality_enabled',      '1');
     setSetting('reality_port',         String(port));
@@ -745,6 +747,38 @@ function cmdReality(args) {
     return;
   }
 
+  // 导入现有 Reality 密鑰（迁移时使用，保持原有客户端配置不变）
+  // 用法: xray-ctl reality import <privateKey> <publicKey> [port] [shortId] [dest]
+  if (sub === 'import') {
+    const privKey = args[1];
+    const pubKey  = args[2];
+    const port    = parseInt(args[3]) || 8443;
+    const shortId = args[4] || randHex(8);
+    const dest    = args[5] || 'www.microsoft.com:443';
+    const sni     = dest.split(':')[0];
+    if (!privKey || !pubKey) {
+      console.log(c.red('用法: xray-ctl reality import <privateKey> <publicKey> [port] [shortId] [dest]'));
+      return;
+    }
+    setSetting('reality_enabled',      '1');
+    setSetting('reality_port',         String(port));
+    setSetting('reality_private_key',  privKey);
+    setSetting('reality_public_key',   pubKey);
+    setSetting('reality_short_ids',    shortId);
+    setSetting('reality_dest',         dest);
+    setSetting('reality_server_names', sni);
+    // 为已有用户补充 UUID
+    const users = db().prepare('SELECT id, uuid FROM users WHERE uuid IS NULL OR uuid = \'\'').all();
+    for (const u of users) {
+      db().prepare('UPDATE users SET uuid=? WHERE id=?').run(newUUID(), u.id);
+    }
+    cmdReload();
+    console.log(c.green(`✓ Reality 密鑰已导入 (port=${port} sni=${sni})`));
+    console.log(`  PublicKey : ${c.cyan(pubKey)}`);
+    console.log(`  ShortId   : ${c.cyan(shortId)}`);
+    return;
+  }
+
   if (sub === 'show') {
     const r = getRealityConfig();
     console.log(c.bold('\n── Reality 配置 ───────────────────────────────'));
@@ -765,7 +799,7 @@ function cmdReality(args) {
     return;
   }
 
-  console.log(c.dim('用法: xray-ctl reality [init [port] [dest] | show | disable]'));
+  console.log(c.dim('用法: xray-ctl reality [init [port] [dest] | import <priv> <pub> [port] [shortId] [dest] | show | disable]'));
 }
 
 // ─── 新命令：selfservice ────────────────────────────────
