@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.2.0';
+const VERSION       = '2.2.1';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -323,6 +323,54 @@ function buildConfig() {
     } catch {
       // JSON 解析失败时忽略，回退到 direct
     }
+  }
+
+  // ── merge_inbounds 模式：只替换 inbounds，保留 outbounds/routing/balancers/observatory ──
+  // 适用于现有手工维护的 xray 配置（多 outbound + leastPing balancer + geosite 路由等）
+  const mergeMode = getSetting('merge_inbounds', '0') === '1' && fs.existsSync(XRAY_CONF);
+  if (mergeMode) {
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(XRAY_CONF, 'utf8')); } catch { /**/ }
+    // 拆分现有路由规则：
+    //   无 inboundTag → 直接保留（domain/ip 直连规则等，顺序不变）
+    //   有 inboundTag + balancerTag → 去掉 inboundTag 变为全流量路由（追加末尾）
+    //   有 inboundTag + outboundTag (非 api) → 过时标签，丢弃
+    const preservedRules = [];
+    const catchAllRules  = [];
+    for (const r of (existing.routing?.rules || [])) {
+      if (!r.inboundTag) {
+        preservedRules.push(r);
+      } else if (r.balancerTag) {
+        // eslint-disable-next-line no-unused-vars
+        const { inboundTag, ...rest } = r;
+        catchAllRules.push(rest);
+      }
+      // else: 过时的 inboundTag+outboundTag 规则 → 丢弃
+    }
+    const merged = {
+      log:    { loglevel: getSetting('log_level', 'warning'), access: LOG_FILE, error: LOG_FILE },
+      api:    { tag: 'api', services: ['HandlerService', 'StatsService'] },
+      stats:  {},
+      policy: { system: { statsInboundUplink: true, statsInboundDownlink: true } },
+      routing: {
+        domainStrategy: existing.routing?.domainStrategy || 'IPIfNonMatch',
+        rules: [
+          { type: 'field', inboundTag: ['api'], outboundTag: 'direct' },
+          ...preservedRules,   // geoip:private、geosite:cn 等直连规则
+          ...catchAllRules,    // 去掉旧 inboundTag 的 balancer 全流量规则
+        ],
+      },
+      inbounds,
+      outbounds: existing.outbounds?.length
+        ? existing.outbounds
+        : [{ tag: 'direct', protocol: 'freedom', settings: {} }, { tag: 'block', protocol: 'blackhole', settings: {} }],
+    };
+    if (existing.balancers?.length)  merged.balancers        = existing.balancers;
+    if (existing.observatory)        merged.observatory       = existing.observatory;
+    if (existing.burstObservatory)   merged.burstObservatory  = existing.burstObservatory;
+    ensureDir(path.dirname(XRAY_CONF));
+    fs.writeFileSync(XRAY_CONF, JSON.stringify(merged, null, 2));
+    return merged;
   }
 
   ensureDir(path.dirname(XRAY_CONF));
@@ -1246,8 +1294,8 @@ function startApiServer() {
   server.on('error', e => {
     if (e.code === 'EADDRINUSE') console.log(c.dim(`  API server 已在运行 (port ${API_PORT})`));
   });
-  server.listen(API_PORT, '127.0.0.1', () => {
-    console.log(c.dim(`  Web UI: http://127.0.0.1:${API_PORT}/`));
+  server.listen(API_PORT, '0.0.0.0', () => {
+    console.log(c.dim(`  Web UI: http://0.0.0.0:${API_PORT}/  (or http://<server-ip>:${API_PORT}/)`));
   });
 }
 
