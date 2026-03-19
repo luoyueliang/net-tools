@@ -220,12 +220,19 @@ async function installCtl() {
   try {
     const out = run(
       'curl -sf --max-time 10 ' +
-      '"https://api.github.com/repos/luoyueliang/net-tools/releases?per_page=20"'
+      '"https://api.github.com/repos/luoyueliang/net-tools/releases?per_page=50"'
     );
     if (out) {
       const rels = JSON.parse(out);
-      const rel  = rels.find(r => r.tag_name && r.tag_name.startsWith('smartxray-v'));
-      if (rel) ctlVer = rel.tag_name.replace('smartxray-v', '');
+      const parseV = v => v.split('.').map(Number);
+      const cmpV = (a, b) => { for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; } return 0; };
+      let best = null;
+      for (const r of rels) {
+        if (!r.tag_name || !r.tag_name.startsWith('smartxray-v')) continue;
+        const ver = r.tag_name.replace('smartxray-v', '');
+        if (!best || cmpV(parseV(ver), parseV(best)) > 0) best = ver;
+      }
+      if (best) ctlVer = best;
     }
   } catch {}
 

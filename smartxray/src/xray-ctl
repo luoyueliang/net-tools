@@ -1474,13 +1474,20 @@ async function cmdUpgrade() {
   process.stdout.write('  查询最新版本... ');
   let latest, latestTag;
   try {
-    const out = run(`curl -sf --max-time 10 "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"`);
+    const out = run(`curl -sf --max-time 10 "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=50"`);
     if (!out) { console.log(c.red('无响应，检查网络')); return; }
     const releases = JSON.parse(out);
-    const rel = releases.find(r => r.tag_name && r.tag_name.startsWith('smartxray-v'));
-    if (!rel) { console.log(c.yellow('未找到 smartxray release，请先发布')); return; }
-    latestTag = rel.tag_name;
-    latest    = latestTag.replace('smartxray-v', '');
+    const parseVF = v => v.split('.').map(Number);
+    const cmpVF = (a, b) => { for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; } return 0; };
+    let bestVer = null, bestTag = null;
+    for (const r of releases) {
+      if (!r.tag_name || !r.tag_name.startsWith('smartxray-v')) continue;
+      const ver = r.tag_name.replace('smartxray-v', '');
+      if (!bestVer || cmpVF(parseVF(ver), parseVF(bestVer)) > 0) { bestVer = ver; bestTag = r.tag_name; }
+    }
+    if (!bestVer) { console.log(c.yellow('未找到 smartxray release，请先发布')); return; }
+    latestTag = bestTag;
+    latest    = bestVer;
   } catch (e) { console.log(c.red(`失败: ${e.message}`)); return; }
   console.log(`最新 ${c.green('v' + latest)}`);
 
