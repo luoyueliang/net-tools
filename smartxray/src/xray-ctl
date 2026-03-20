@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.3.0';
+const VERSION       = '2.3.1';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -750,7 +750,39 @@ function cmdUser(args) {
     return;
   }
 
-  console.log(c.dim('用法: xray-ctl user [list|add <名称> [用户名] [密码] [有效小时] | del | enable | disable | passwd] ...'));
+  if (sub === 'set-port') {
+    // xray-ctl user set-port <name> [socks-port] [http-port]
+    // 用于将用户代理端口改为固定值（如 WAN 端口转发场景）
+    const u = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(args[1], parseInt(args[1]) || 0);
+    if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
+    const newSocks = args[2] ? parseInt(args[2]) : null;
+    const newHttp  = args[3] ? parseInt(args[3]) : null;
+    if (!newSocks && !newHttp) {
+      console.log(c.red('用法: xray-ctl user set-port <名称|ID> [新SOCKS端口] [新HTTP端口]'));
+      console.log(c.dim(`  当前: socks:${u.port}  http:${u.http_port || '—'}`));
+      return;
+    }
+    if (newSocks && (newSocks < 1 || newSocks > 65535)) { console.log(c.red('✗ 端口无效: ' + newSocks)); return; }
+    if (newHttp  && (newHttp  < 1 || newHttp  > 65535)) { console.log(c.red('✗ 端口无效: ' + newHttp));  return; }
+    if (newSocks && newSocks !== u.port) {
+      firewallClose(u.port);
+      db().prepare('UPDATE users SET port=?, tag=? WHERE id=?').run(newSocks, `u-${u.name}-${newSocks}`, u.id);
+      firewallOpen(newSocks);
+    }
+    if (newHttp !== null && newHttp !== u.http_port) {
+      if (u.http_port) firewallClose(u.http_port);
+      db().prepare('UPDATE users SET http_port=? WHERE id=?').run(newHttp, u.id);
+      firewallOpen(newHttp);
+    }
+    cmdReload();
+    const updated = db().prepare('SELECT * FROM users WHERE id=?').get(u.id);
+    console.log(c.green(`✓ "${u.name}" 端口已更新`));
+    console.log(`  SOCKS5  | 端口: ${c.cyan(updated.port)}`);
+    if (updated.http_port) console.log(`  HTTP    | 端口: ${c.cyan(updated.http_port)}`);
+    return;
+  }
+
+  console.log(c.dim('用法: xray-ctl user [list|add <名称> [用户名] [密码] [有效小时] | del | enable | disable | passwd | set-port <名称> [socks] [http]] ...'));
 }
 
 // ─── 新命令：reality ──────────────────────────────────────
@@ -1553,6 +1585,7 @@ ${c.bold('用户管理')} (自动操作防火墙 + 热重载)
   xray-ctl user enable  <名称|ID>
   xray-ctl user disable <名称|ID>
   xray-ctl user passwd  <名称|ID> [新密码]
+  xray-ctl user set-port <名称|ID> [socks端口] [http端口]  指定固定端口（WAN 转发场景）
 
 ${c.bold('Reality (VLESS+XTLS-Reality 最严格)')}
   xray-ctl reality init [port] [dest]   生成密钥对并启用 Reality
