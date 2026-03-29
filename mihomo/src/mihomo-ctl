@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.4.19';
+const VERSION     = '1.5.0';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -1766,15 +1766,187 @@ async function cmdConnections(action) {
 }
 
 // ─── 命令：check ────────────────────────────────────────────────
+function runConfigSyntaxTest() {
+  return run(`"${BIN}" -t -d "${CONFIG_DIR}" 2>&1`);
+}
+
+function isConfigSyntaxOk(result) {
+  return /test is successful|parse config success/i.test(result) || result === '';
+}
+
+function printConfigSyntaxError(result) {
+  console.log(c.red('✗ 配置文件存在错误:\n'));
+  result.split('\n').forEach(l => {
+    if (!l.trim()) return;
+    console.log('  ' + (l.includes('ERR') ? c.red(l) : c.yellow(l)));
+  });
+}
+
+function decodeBase64Url(input) {
+  if (!input) return null;
+  const b64 = input.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  try { return Buffer.from(b64 + pad, 'base64'); }
+  catch { return null; }
+}
+
+function parseProxiesFromYaml(rawYaml) {
+  const lines = rawYaml.split(/\r?\n/);
+  const list = [];
+  let inProxies = false;
+  let proxiesIndent = 0;
+  let current = null;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    list.push(current);
+    current = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const indent = (line.match(/^\s*/) || [''])[0].length;
+    const trimmed = line.trim();
+
+    if (!inProxies) {
+      const pm = line.match(/^(\s*)proxies:\s*$/);
+      if (pm) {
+        inProxies = true;
+        proxiesIndent = pm[1].length;
+      }
+      continue;
+    }
+
+    if (trimmed && !trimmed.startsWith('#') && indent <= proxiesIndent) {
+      pushCurrent();
+      break;
+    }
+
+    const nameMatch = line.match(/^\s*-\s+name:\s*"?([^"#]+?)"?\s*(?:#.*)?$/);
+    if (nameMatch) {
+      pushCurrent();
+      current = {
+        index: list.length,
+        name: nameMatch[1].trim(),
+        line: i + 1,
+        type: '',
+        publicKey: '',
+        shortId: '',
+      };
+      continue;
+    }
+
+    if (!current) continue;
+
+    const typeMatch = line.match(/^\s*type:\s*([^\s#]+)\s*(?:#.*)?$/);
+    if (typeMatch) current.type = typeMatch[1].trim();
+
+    const pkMatch = line.match(/^\s*public-key:\s*"?([^"#]+?)"?\s*(?:#.*)?$/);
+    if (pkMatch) {
+      current.publicKey = pkMatch[1].trim();
+      current.publicKeyLine = i + 1;
+    }
+
+    const sidMatch = line.match(/^\s*short-id:\s*"?([^"#]+?)"?\s*(?:#.*)?$/);
+    if (sidMatch) {
+      current.shortId = sidMatch[1].trim();
+      current.shortIdLine = i + 1;
+    }
+  }
+
+  pushCurrent();
+  return list;
+}
+
+function diagnoseRealityPublicKeyError(testOutput) {
+  const m = testOutput.match(/proxy\s+(\d+):\s*invalid REALITY public key/i);
+  if (!m) return null;
+
+  const index = Number(m[1]);
+  let rawYaml = '';
+  try { rawYaml = fs.readFileSync(CONFIG, 'utf8'); }
+  catch {
+    return { index, proxy: null, issue: '无法读取 config.yaml' };
+  }
+
+  const proxies = parseProxiesFromYaml(rawYaml);
+  const proxy = proxies[index] || null;
+  if (!proxy) {
+    return { index, proxy: null, issue: '无法定位到对应 proxy 条目（索引与 YAML 不匹配）' };
+  }
+
+  if (!proxy.publicKey) {
+    return { index, proxy, issue: '未找到 public-key 字段' };
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(proxy.publicKey)) {
+    return { index, proxy, issue: 'public-key 包含非 Base64URL 字符' };
+  }
+
+  const decoded = decodeBase64Url(proxy.publicKey);
+  if (!decoded) return { index, proxy, issue: 'public-key Base64URL 解码失败' };
+  if (decoded.length !== 32) {
+    return { index, proxy, issue: `public-key 解码后长度=${decoded.length}，期望 32 字节` };
+  }
+
+  return { index, proxy, issue: '' };
+}
+
+function diagnoseStartFailure() {
+  console.log(c.bold('\n── 启动失败自检 ──────────────────────────────'));
+  console.log(c.dim(`  文件: ${CONFIG}\n`));
+
+  const result = runConfigSyntaxTest();
+  if (isConfigSyntaxOk(result)) {
+    console.log(c.yellow('⚠ 配置语法检查通过，但进程仍未就绪'));
+    console.log(c.dim('  可能原因: 端口占用 / 权限不足 / LaunchAgent 或 Service 状态异常'));
+    console.log(c.dim('  继续排查: mihomo-ctl log-on && mihomo-ctl restart'));
+    return;
+  }
+
+  printConfigSyntaxError(result);
+  const d = diagnoseRealityPublicKeyError(result);
+  if (!d) {
+    console.log(c.dim('\n  修复后重试: mihomo-ctl restart'));
+    return;
+  }
+
+  console.log(c.bold('\n  Reality 精准定位'));
+  if (!d.proxy) {
+    console.log(c.yellow(`  proxies[${d.index}]`));
+    console.log(c.yellow(`  自检结果: ${d.issue}`));
+    console.log(c.dim('  建议: 检查 proxies 列表顺序或重新导出 config.yaml'));
+    return;
+  }
+
+  console.log(`  节点: ${c.cyan(d.proxy.name)}  (${c.dim('proxies[' + d.index + ']')})`);
+  console.log(`  类型: ${d.proxy.type || c.dim('未知')}`);
+  if (d.proxy.publicKey) {
+    console.log(`  public-key: ${c.cyan(d.proxy.publicKey)} ${c.dim('(len=' + d.proxy.publicKey.length + ')')}`);
+  }
+  if (d.proxy.shortId) {
+    console.log(`  short-id: ${c.cyan(d.proxy.shortId)} ${c.dim('(len=' + d.proxy.shortId.length + ')')}`);
+  }
+  if (d.proxy.line) {
+    console.log(c.dim(`  配置位置: ${CONFIG}:${d.proxy.line}`));
+  }
+
+  if (d.issue) {
+    console.log(c.yellow(`  自检结果: ${d.issue}`));
+  } else {
+    console.log(c.yellow('  自检结果: 字符串格式合法，但与服务端当前 Reality 公钥不匹配'));
+  }
+  console.log(c.dim('  修复建议: 用服务端当前 publicKey 覆盖此字段（不是 privateKey）'));
+  console.log(c.dim('  修复后重试: mihomo-ctl restart'));
+}
+
 function cmdCheck() {
   console.log(c.bold('\n── 配置语法检查 ──────────────────────────────'));
   console.log(c.dim(`  文件: ${CONFIG}\n`));
-  const result = run(`"${BIN}" -t -d "${process.env.HOME}/.config/mihomo" 2>&1`);
-  if (/test is successful|parse config success/i.test(result) || result === '') {
+  const result = runConfigSyntaxTest();
+  if (isConfigSyntaxOk(result)) {
     console.log(c.green('✓ 配置文件语法正确'));
   } else {
-    console.log(c.red('✗ 配置文件存在错误:\n'));
-    result.split('\n').forEach(l => console.log('  ' + (l.includes('ERR') ? c.red(l) : c.yellow(l))));
+    printConfigSyntaxError(result);
     console.log(c.dim('\n  修复后热重载: mihomo-ctl reload'));
   }
 }
@@ -1804,7 +1976,8 @@ async function cmdStart() {
     await cmdProxyOn();
     if (fs.existsSync(DNS_AUTOSTART_FILE)) await cmdDnsOn();
   } else {
-    console.log(c.red(`✗ 启动失败，开启日志后重试: mihomo-ctl log-on && mihomo-ctl restart`));
+    console.log(c.red('✗ 启动失败'));
+    diagnoseStartFailure();
   }
 }
 
@@ -1879,7 +2052,8 @@ async function cmdRestart() {
     await cmdProxyOn();
     if (dnsManaged) await cmdDnsOn();
   } else {
-    console.log(c.red('✗ 重启失败，开启日志: mihomo-ctl log-on && mihomo-ctl restart'));
+    console.log(c.red('✗ 重启失败'));
+    diagnoseStartFailure();
   }
 }
 
