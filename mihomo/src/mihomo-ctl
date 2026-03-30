@@ -1892,10 +1892,22 @@ function diagnoseRealityPublicKeyError(testOutput) {
   return { index, proxy, issue: '' };
 }
 
-function diagnoseStartFailure() {
+function diagnoseStartFailure(error) {
   console.log(c.bold('\n── 启动失败自检 ──────────────────────────────'));
   console.log(c.dim(`  文件: ${CONFIG}\n`));
 
+  // 1. 先输出传入的错误（如有）
+  if (error) {
+    if (typeof error === 'object' && error.message) {
+      console.error(c.red(`[mihomo-ctl] 启动失败: ${error.message}`));
+    } else if (typeof error === 'string') {
+      console.error(c.red(`[mihomo-ctl] 启动失败: ${error}`));
+    } else {
+      console.error(c.red('[mihomo-ctl] 启动失败，未知错误'));
+    }
+  }
+
+  // 2. 配置语法和 Reality 公钥诊断
   const result = runConfigSyntaxTest();
   if (isConfigSyntaxOk(result)) {
     console.log(c.yellow('⚠ 配置语法检查通过，但进程仍未就绪'));
@@ -1978,7 +1990,7 @@ async function cmdStart() {
     if (fs.existsSync(DNS_AUTOSTART_FILE)) await cmdDnsOn();
   } else {
     console.log(c.red('✗ 启动失败'));
-    diagnoseStartFailure();
+    diagnoseStartFailure(); // 保持兼容，后续可传递错误对象
   }
 }
 
@@ -2114,7 +2126,7 @@ async function cmdRestart() {
     if (dnsManaged) await cmdDnsOn();
   } else {
     console.log(c.red('✗ 重启失败'));
-    diagnoseStartFailure();
+    diagnoseStartFailure(); // 保持兼容，后续可传递错误对象
   }
 }
 
