@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.5.0';
+const VERSION     = '1.5.1';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -37,6 +37,7 @@ const PF_CONF            = path.join(TMP, 'mihomo-dns.pf.conf');
 const PF_TOKEN_FILE      = path.join(TMP, 'mihomo-dns.pf.token');
 const DNS_AUTOSTART_FILE = path.join(CONFIG_DIR, '.dns-autostart');
 const TUN_STATE_FILE     = path.join(CONFIG_DIR, '.tun-active');
+const STOP_PREF_FILE     = path.join(CONFIG_DIR, '.stop-preferences.json');
 
 // ANSI 颜色
 const c = {
@@ -2005,20 +2006,80 @@ async function shutdownProcess(label) {
   return !(await isRunning());
 }
 
+function getTunEnableFromConfig() {
+  if (!fs.existsSync(CONFIG)) return null;
+  try {
+    const cfgText = fs.readFileSync(CONFIG, 'utf8');
+    const tunIdx  = cfgText.indexOf('\ntun:\n');
+    if (tunIdx === -1) return null;
+    const enableIdx = cfgText.indexOf('\n  enable:', tunIdx);
+    if (enableIdx === -1) return null;
+    const lineEnd = cfgText.indexOf('\n', enableIdx + 1);
+    const line    = lineEnd === -1 ? cfgText.slice(enableIdx) : cfgText.slice(enableIdx, lineEnd);
+    if (/enable:\s*true/.test(line)) return true;
+    if (/enable:\s*false/.test(line)) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function recordStopPreferences() {
+  const pref = {
+    savedAt: new Date().toISOString(),
+    platform: P.name,
+    proxyManaged: P.supportsProxy ? P.isSystemProxyActive() : false,
+    dnsManaged: P.supportsDns ? isDnsManagedByMihomo() : false,
+    dnsAutostart: fs.existsSync(DNS_AUTOSTART_FILE),
+    tunEnableInConfig: getTunEnableFromConfig(),
+    tunStateFile: fs.existsSync(TUN_STATE_FILE),
+  };
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(STOP_PREF_FILE, JSON.stringify(pref, null, 2));
+  return pref;
+}
+
+function forceTunOffInConfig() {
+  if (!fs.existsSync(CONFIG)) return false;
+  try {
+    const cfgText = fs.readFileSync(CONFIG, 'utf8');
+    const newCfg  = setTunEnable(cfgText, 'false');
+    if (newCfg && newCfg !== cfgText) {
+      fs.writeFileSync(CONFIG, newCfg);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function cmdStop() {
-  const dnsManaged   = isDnsManagedByMihomo();
-  const proxyManaged = P.isSystemProxyActive();
-  if (proxyManaged) {
-    process.stdout.write('  系统代理接管中，先关闭代理... ');
+  const pref = recordStopPreferences();
+  console.log(c.dim(`  已记录停机前默认设置: ${STOP_PREF_FILE}`));
+
+  if (P.supportsProxy) {
+    process.stdout.write('  执行 proxy-off... ');
     await cmdProxyOff();
   }
-  if (dnsManaged) {
-    console.log(c.yellow('  DNS 接管中，先恢复 DNS...'));
+  if (P.supportsDns) {
+    console.log(c.yellow('  执行 dns-off...'));
     await cmdDnsOff({ keepAutostart: true });
   }
+
+  const tunChanged = forceTunOffInConfig();
+  try { fs.unlinkSync(TUN_STATE_FILE); } catch {}
+  if (tunChanged) console.log(c.green('  ✓ 已写入 tun-off（config.tun.enable=false）'));
+  else console.log(c.dim('  ✓ tun-off 已确认（配置无需变更）'));
+
   const stopped = await shutdownProcess('停止 Mihomo...');
   if (stopped) {
-    const notes = [proxyManaged && '系统代理已关闭', dnsManaged && 'DNS 已恢复 DHCP'].filter(Boolean);
+    const notes = [
+      P.supportsProxy && '系统代理已关闭',
+      P.supportsDns && 'DNS 已恢复',
+      'TUN 已关闭',
+      pref.dnsAutostart && '已保留 DNS 自动恢复标记',
+    ].filter(Boolean);
     console.log(c.green('✓ 已停止' + (notes.length ? '，' + notes.join('，') : '')));
   } else {
     console.log(c.yellow(`进程仍在，手动: ${P.killHint()}`));
