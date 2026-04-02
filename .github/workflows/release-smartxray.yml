@@ -44,7 +44,7 @@ jobs:
           printf '```\n\n'                                             >> /tmp/notes.md
           printf '### 自升级（已安装用户）\n\n'                         >> /tmp/notes.md
           printf '```bash\nxray-ctl upgrade\n```\n\n'                  >> /tmp/notes.md
-          printf '> 需已安装 Node.js v16+\n'                           >> /tmp/notes.md
+          printf '> 需已安装 Node.js v18+\n'                           >> /tmp/notes.md
           gh release create "${TAG}" \
             --title "smartxray v${VER}" \
             --notes-file /tmp/notes.md \
@@ -70,6 +70,6 @@ jobs:
           VER="${{ steps.tag.outputs.version }}"
           gh release upload "${TAG}" \
             "dist/smartxray-installer-${VER}.tar.gz" \
-            "dist/xray-ctl-${VER}.gz" \
+            "dist/xray-ctl-bundle-${VER}.tar.gz" \
             --clobber \
             --repo luoyueliang/net-tools
