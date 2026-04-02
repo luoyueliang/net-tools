@@ -90,7 +90,7 @@ const CTL_BIN    = path.join(binDir, 'xray-ctl');
 // ── Step 1: Check Node.js version ────────────────────────────────
 function checkNode() {
   const ver = process.versions.node.split('.').map(Number);
-  if (ver[0] < 16) error(`Node.js v16+ required, found v${process.versions.node}`);
+  if (ver[0] < 18) error(`Node.js v18+ required, found v${process.versions.node}`);
   success(`Node.js v${process.versions.node}`);
 }
 

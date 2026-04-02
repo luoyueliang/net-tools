@@ -87,6 +87,26 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
 
 .empty{padding:40px;text-align:center;color:#4a5568;font-size:14px}
 .tag-mono{font-family:monospace;font-size:12px;color:#a0aec0}
+
+/* Help markdown rendering */
+.help-body h1{font-size:1.6em;font-weight:700;color:#63b3ed;margin:24px 0 12px;padding-bottom:6px;border-bottom:1px solid #2d3748}
+.help-body h2{font-size:1.3em;font-weight:600;color:#e2e8f0;margin:20px 0 10px}
+.help-body h3{font-size:1.1em;font-weight:600;color:#a0aec0;margin:16px 0 8px}
+.help-body p{margin:8px 0;color:#cbd5e0}
+.help-body strong{color:#e2e8f0}
+.help-body em{color:#a0aec0;font-style:italic}
+.help-body code{background:#171923;padding:1px 6px;border-radius:4px;font-family:'SFMono-Regular',Consolas,monospace;font-size:.88em;color:#68d391}
+.help-body pre{background:#171923;border:1px solid #2d3748;border-radius:8px;padding:14px 16px;overflow-x:auto;margin:10px 0;line-height:1.6}
+.help-body pre code{background:none;padding:0;color:#a0aec0;font-size:12px}
+.help-body blockquote{border-left:3px solid #4a90d9;padding:8px 14px;margin:10px 0;background:#171923;border-radius:0 6px 6px 0;color:#90cdf4;font-size:.92em}
+.help-body ul,.help-body ol{margin:8px 0 8px 20px;color:#cbd5e0}
+.help-body li{margin:4px 0}
+.help-body hr{border:none;border-top:1px solid #2d3748;margin:20px 0}
+.help-body table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+.help-body th{padding:8px 12px;text-align:left;background:#171923;color:#718096;border:1px solid #2d3748;font-weight:500}
+.help-body td{padding:8px 12px;border:1px solid #2d3748;color:#cbd5e0}
+.help-body a{color:#63b3ed;text-decoration:none}
+.help-body a:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -100,7 +120,11 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
     <a data-page="firewall" onclick="showPage('firewall',this)"><span class="ico">🔥</span>防火墙</a>
     <a data-page="configeditor" onclick="showPage('configeditor',this)"><span class="ico">📝</span>配置编辑</a>
     <a data-page="settings" onclick="showPage('settings',this)"><span class="ico">⚙</span>设置</a>
+    <a data-page="help" onclick="showPage('help',this)"><span class="ico">❓</span>帮助</a>
   </nav>
+  <div style="padding:12px 16px;border-top:1px solid #2d3748">
+    <button class="btn btn-gray btn-sm" style="width:100%" onclick="doLogout()">🔒 退出登录</button>
+  </div>
 </aside>
 
 <main class="main">
@@ -135,8 +159,8 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
       <button class="btn btn-primary btn-sm" onclick="showPage('users',document.querySelector('[data-page=users]'));openAddModal()">+ 添加用户</button>
     </div>
     <table>
-      <thead><tr><th>名称</th><th>协议</th><th>端口</th><th>账号</th><th>状态</th></tr></thead>
-      <tbody id="overview-users"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>名称</th><th>SOCKS5</th><th>HTTP</th><th>VLESS</th><th>账号</th><th>状态</th></tr></thead>
+      <tbody id="overview-users"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -151,8 +175,8 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
       </div>
     </div>
     <table>
-      <thead><tr><th>ID</th><th>名称</th><th>协议</th><th>端口</th><th>用户名</th><th>密码</th><th>备注</th><th>状态</th><th>操作</th></tr></thead>
-      <tbody id="users-table"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>ID</th><th>名称</th><th>SOCKS5</th><th>HTTP</th><th>VLESS</th><th>用户名</th><th>密码</th><th>备注</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="users-table"><tr><td colspan="10" class="empty">加载中…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -334,6 +358,18 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
   </div>
 </div>
 
+<!-- ── 帮助 ── -->
+<div class="page" id="page-help">
+  <div class="card">
+    <div class="card-header">使用帮助 — 代理设置指南
+      <button class="btn btn-gray btn-sm" onclick="loadHelp()">↺ 刷新</button>
+    </div>
+    <div id="help-content" class="help-body" style="padding:20px 24px;line-height:1.8;font-size:14px">
+      <p style="color:#718096">加载中…</p>
+    </div>
+  </div>
+</div>
+
 </main>
 
 <!-- ── 添加用户 Modal ── -->
@@ -394,6 +430,7 @@ function showPage(name, el) {
   if (name === 'settings') loadSettings();
   if (name === 'firewall')      loadFirewall();
   if (name === 'configeditor')  { loadFormConfig(); }
+  if (name === 'help')          loadHelp();
 }
 
 // ── 概览 ─────────────────────────────────────────────────────
@@ -409,12 +446,13 @@ async function loadStatus() {
 async function loadOverviewUsers() {
   const users = await apiFetch('GET', '/api/users');
   const tb = document.getElementById('overview-users');
-  if (!users.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">暂无用户</td></tr>'; return; }
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">暂无用户</td></tr>'; return; }
   tb.innerHTML = users.map(u => `
     <tr>
       <td><b>${esc(u.name)}</b></td>
-      <td><span class="badge blue">${u.protocol}</span></td>
       <td class="tag-mono">${u.port}</td>
+      <td class="tag-mono">${u.http_port || '<span style="color:#4a5568">—</span>'}</td>
+      <td class="tag-mono">${u.uuid ? '8443' : '<span style="color:#4a5568">—</span>'}</td>
       <td class="tag-mono">${esc(u.username)} / ${esc(u.password)}</td>
       <td>${u.enabled ? '<span class="badge green">启用</span>' : '<span class="badge gray">禁用</span>'}</td>
     </tr>`).join('');
@@ -428,13 +466,14 @@ async function apiReload() { await apiFetch('POST','/api/reload'); toast('配置
 async function loadUsers() {
   const users = await apiFetch('GET', '/api/users');
   const tb = document.getElementById('users-table');
-  if (!users.length) { tb.innerHTML = '<tr><td colspan="9" class="empty">暂无用户，点击"添加用户"</td></tr>'; return; }
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="10" class="empty">暂无用户，点击"添加用户"</td></tr>'; return; }
   tb.innerHTML = users.map(u => `
     <tr>
       <td class="tag-mono">${u.id}</td>
       <td><b>${esc(u.name)}</b></td>
-      <td><span class="badge blue">${u.protocol}</span></td>
       <td class="tag-mono">${u.port}</td>
+      <td class="tag-mono">${u.http_port || '<span style="color:#4a5568">—</span>'}</td>
+      <td class="tag-mono">${u.uuid ? '8443' : '<span style="color:#4a5568">—</span>'}</td>
       <td class="tag-mono">${esc(u.username)}</td>
       <td class="tag-mono" style="display:flex;align-items:center;gap:4px">
         ${esc(u.password)}
@@ -608,7 +647,119 @@ async function saveRawConfig() {
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+// ── Markdown → HTML 渲染器 ───────────────────────────────────
+function renderMarkdown(md) {
+  const lines = md.split('\n');
+  let html = '', inCode = false, codeLines = [], inList = false, listType = '', inTable = false, tableRows = [];
 
+  function inlineFmt(s) {
+    return s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  }
+
+  function flushTable() {
+    if (!tableRows.length) return;
+    let t = '<table><thead><tr>';
+    tableRows[0].forEach(c => t += `<th>${inlineFmt(c)}</th>`);
+    t += '</tr></thead><tbody>';
+    for (let i = 2; i < tableRows.length; i++) {
+      t += '<tr>';
+      tableRows[i].forEach(c => t += `<td>${inlineFmt(c)}</td>`);
+      t += '</tr>';
+    }
+    t += '</tbody></table>';
+    html += t;
+    tableRows = [];
+    inTable = false;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Code blocks
+    if (line.startsWith('```')) {
+      if (inCode) {
+        html += `<pre><code>${codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
+        codeLines = []; inCode = false; continue;
+      }
+      if (inTable) flushTable();
+      if (inList) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+      inCode = true; continue;
+    }
+    if (inCode) { codeLines.push(line); continue; }
+
+    // Table
+    if (line.startsWith('|') && line.endsWith('|')) {
+      const cells = line.slice(1, -1).split('|').map(c => c.trim());
+      if (!inTable) inTable = true;
+      tableRows.push(cells); continue;
+    }
+    if (inTable) flushTable();
+
+    // Close list if needed
+    if (inList && !line.match(/^[-*\d]\.|^[-*] /)) { html += listType === 'ul' ? '</ul>' : '</ol>'; inList = false; }
+
+    // Headings
+    if (line.startsWith('### ')) { html += `<h3>${inlineFmt(line.slice(4))}</h3>`; continue; }
+    if (line.startsWith('## '))  { html += `<h2>${inlineFmt(line.slice(3))}</h2>`; continue; }
+    if (line.startsWith('# '))   { html += `<h1>${inlineFmt(line.slice(2))}</h1>`; continue; }
+
+    // HR
+    if (/^---+$/.test(line.trim())) { html += '<hr>'; continue; }
+
+    // Blockquote
+    if (line.startsWith('> ')) { html += `<blockquote>${inlineFmt(line.slice(2))}</blockquote>`; continue; }
+
+    // Unordered list
+    if (/^[-*] /.test(line)) {
+      if (!inList) { html += '<ul>'; inList = true; listType = 'ul'; }
+      html += `<li>${inlineFmt(line.slice(2))}</li>`; continue;
+    }
+    // Ordered list
+    const olMatch = line.match(/^(\d+)\. (.*)$/);
+    if (olMatch) {
+      if (!inList) { html += '<ol>'; inList = true; listType = 'ol'; }
+      html += `<li>${inlineFmt(olMatch[2])}</li>`; continue;
+    }
+
+    // Empty line
+    if (!line.trim()) continue;
+
+    // Paragraph
+    html += `<p>${inlineFmt(line)}</p>`;
+  }
+  if (inList) html += listType === 'ul' ? '</ul>' : '</ol>';
+  if (inTable) flushTable();
+  if (inCode) html += `<pre><code>${codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
+  return html;
+}
+
+// ── 帮助 ─────────────────────────────────────────────────────
+let helpCache = '';
+async function loadHelp() {
+  if (helpCache) {
+    document.getElementById('help-content').innerHTML = helpCache;
+    return;
+  }
+  try {
+    const r = await fetch(API + '/api/help');
+    const md = await r.text();
+    helpCache = renderMarkdown(md);
+    document.getElementById('help-content').innerHTML = helpCache;
+  } catch (e) {
+    document.getElementById('help-content').innerHTML = `<p style="color:#fc8181">加载帮助内容失败: ${esc(e.message)}</p>`;
+  }
+}
+
+// ── 退出登录 ─────────────────────────────────────────────────
+async function doLogout() {
+  await fetch(API + '/api/logout', { method: 'POST' });
+  location.reload();
+}
 // ── 初始化 ───────────────────────────────────────────────────
 loadStatus();
 loadOverviewUsers();

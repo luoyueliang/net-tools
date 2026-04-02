@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.3.1';
+const VERSION       = '2.4.1';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -297,26 +297,54 @@ function buildConfig() {
     }
   }
 
-  // ── 每用户独立 SOCKS5 + HTTP 入站（账密认证）──────────────
-  for (const u of users) {
-    // SOCKS5（支持 UDP，账密认证）
+  // ── 共享端口模式：所有用户复用同一 SOCKS/HTTP 端口，用账密区分身份 ──
+  const sharedSocksPort = parseInt(getSetting('shared_socks_port', '0')) || 0;
+  const sharedHttpPort  = parseInt(getSetting('shared_http_port', '0'))  || 0;
+
+  if (sharedSocksPort && users.length) {
+    const accounts = users.map(u => ({ user: u.username, pass: u.password }));
     inbounds.push({
-      tag:      u.tag,
-      port:     u.port,
+      tag:      'shared-socks',
+      port:     sharedSocksPort,
       listen,
       protocol: 'socks',
-      settings: { auth: 'password', accounts: [{ user: u.username, pass: u.password }], udp: true },
+      settings: { auth: 'password', accounts, udp: true },
       sniffing: { enabled: true, destOverride: ['http', 'tls'] },
     });
-    // HTTP 代理（账密认证）
-    if (u.http_port) {
+  }
+  if (sharedHttpPort && users.length) {
+    const accounts = users.map(u => ({ user: u.username, pass: u.password }));
+    inbounds.push({
+      tag:      'shared-http',
+      port:     sharedHttpPort,
+      listen,
+      protocol: 'http',
+      settings: { accounts, allowTransparent: false },
+    });
+  }
+
+  // ── 每用户独立 SOCKS5 + HTTP 入站（仅在未配置共享端口时创建）──────
+  if (!sharedSocksPort && !sharedHttpPort) {
+    for (const u of users) {
+      // SOCKS5（支持 UDP，账密认证）
       inbounds.push({
-        tag:      u.tag + '-http',
-        port:     u.http_port,
+        tag:      u.tag,
+        port:     u.port,
         listen,
-        protocol: 'http',
-        settings: { accounts: [{ user: u.username, pass: u.password }], allowTransparent: false },
+        protocol: 'socks',
+        settings: { auth: 'password', accounts: [{ user: u.username, pass: u.password }], udp: true },
+        sniffing: { enabled: true, destOverride: ['http', 'tls'] },
       });
+      // HTTP 代理（账密认证）
+      if (u.http_port) {
+        inbounds.push({
+          tag:      u.tag + '-http',
+          port:     u.http_port,
+          listen,
+          protocol: 'http',
+          settings: { accounts: [{ user: u.username, pass: u.password }], allowTransparent: false },
+        });
+      }
     }
   }
 
@@ -434,6 +462,8 @@ function exportMihomoProxies() {
   const reality = getRealityConfig();
   if (!users.length) { fs.writeFileSync(MIHOMO_OUT, '# no proxies\n'); return; }
   const ip    = getSetting('server_ip', '127.0.0.1');
+  const sharedSocksPort = parseInt(getSetting('shared_socks_port', '0')) || 0;
+  const sharedHttpPort  = parseInt(getSetting('shared_http_port', '0'))  || 0;
   const lines = ['proxies:'];
   for (const u of users) {
     // VLESS + Reality
@@ -455,16 +485,17 @@ function exportMihomoProxies() {
     lines.push(`  - name: "${u.name}-socks5"`);
     lines.push(`    type: socks5`);
     lines.push(`    server: ${ip}`);
-    lines.push(`    port: ${u.port}`);
+    lines.push(`    port: ${sharedSocksPort || u.port}`);
     lines.push(`    username: ${u.username}`);
     lines.push(`    password: ${u.password}`);
     lines.push(`    udp: true`);
     // HTTP
-    if (u.http_port) {
+    const httpP = sharedHttpPort || u.http_port;
+    if (httpP) {
       lines.push(`  - name: "${u.name}-http"`);
       lines.push(`    type: http`);
       lines.push(`    server: ${ip}`);
-      lines.push(`    port: ${u.http_port}`);
+      lines.push(`    port: ${httpP}`);
       lines.push(`    username: ${u.username}`);
       lines.push(`    password: ${u.password}`);
     }
@@ -558,8 +589,23 @@ function extFwOp(action, port) {
   else if (mode === 'openwrt') openwrtFw(action, port);
 }
 
-function firewallOpen(port)  { fwOp('open',  port); extFwOp('open',  port); }
-function firewallClose(port) { fwOp('close', port); extFwOp('close', port); }
+function firewallOpen(port)  { if (!port) return; fwOp('open',  port); extFwOp('open',  port); }
+function firewallClose(port) { if (!port) return; fwOp('close', port); extFwOp('close', port); }
+
+// 共享端口模式下，用户端口不需要单独开放防火墙
+function isSharedMode() {
+  return !!(parseInt(getSetting('shared_socks_port', '0')) || parseInt(getSetting('shared_http_port', '0')));
+}
+function userFirewallOpen(socksPort, httpPort) {
+  if (isSharedMode()) return;
+  firewallOpen(socksPort);
+  firewallOpen(httpPort);
+}
+function userFirewallClose(socksPort, httpPort) {
+  if (isSharedMode()) return;
+  firewallClose(socksPort);
+  firewallClose(httpPort);
+}
 
 // ─── 命令：status ────────────────────────────────────────────
 function cmdStatus() {
@@ -574,6 +620,11 @@ function cmdStatus() {
   console.log(c.bold('\n── Xray Server 状态 ────────────────────────────'));
   console.log(`  状态     : ${running ? c.green('● 运行中') : c.red('● 已停止')}${ver ? '  ' + c.dim(ver) : ''}${pid ? '  PID=' + c.dim(pid) : ''}`);
   console.log(`  VLESS    : ${reality.enabled ? c.green(`✓ Reality 端口 ${reality.port}  SNI=${reality.serverNames[0]}`) : c.dim('未启用  (xray-ctl reality init)')}`);
+  const sharedSocks = parseInt(getSetting('shared_socks_port', '0')) || 0;
+  const sharedHttp  = parseInt(getSetting('shared_http_port', '0'))  || 0;
+  if (sharedSocks || sharedHttp) {
+    console.log(`  共享端口 : ${sharedSocks ? c.green(`SOCKS:${sharedSocks}`) : c.dim('—')}  ${sharedHttp ? c.green(`HTTP:${sharedHttp}`) : c.dim('—')}  ${c.dim('(多用户共享认证)')}`);
+  }
   console.log(`  自助申请 : ${ssEnabled ? c.green(`✓ 开启  有效期 ${getSetting('selfservice_hours', '2')}h`) : c.dim('关闭  (xray-ctl selfservice on)')}`);
   console.log(`  Web UI   : ${c.cyan(`http://127.0.0.1:${API_PORT}/`)}`);
   if (ssEnabled) console.log(`  自助页面 : ${c.cyan(`http://127.0.0.1:${API_PORT}/self`)}`);
@@ -697,12 +748,14 @@ function cmdUser(args) {
         INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag,expires_at)
         VALUES (?,?,?,?,'socks',?,?,?,?)
       `).run(name, socksPort, httpPort, uuid, username, password, tag, expiresAt);
-      firewallOpen(socksPort);
-      firewallOpen(httpPort);
+      userFirewallOpen(socksPort, httpPort);
       cmdReload();
+      const shared = isSharedMode();
+      const sharedSocks = parseInt(getSetting('shared_socks_port', '0')) || 0;
+      const sharedHttp  = parseInt(getSetting('shared_http_port', '0'))  || 0;
       console.log(c.green(`✓ 用户 "${name}" 已创建`));
-      console.log(`  SOCKS5  | 端口: ${c.cyan(socksPort)} | ${c.cyan(username)} / ${c.cyan(password)}`);
-      console.log(`  HTTP    | 端口: ${c.cyan(httpPort)} | ${c.cyan(username)} / ${c.cyan(password)}`);
+      console.log(`  SOCKS5  | 端口: ${c.cyan(shared ? sharedSocks + ' (共享)' : socksPort)} | ${c.cyan(username)} / ${c.cyan(password)}`);
+      console.log(`  HTTP    | 端口: ${c.cyan(shared ? sharedHttp + ' (共享)' : httpPort)} | ${c.cyan(username)} / ${c.cyan(password)}`);
       const reality = getRealityConfig();
       if (reality.enabled && reality.publicKey) {
         console.log(`  VLESS   | 端口: ${c.cyan(reality.port)} | UUID: ${c.cyan(uuid)}`);
@@ -721,8 +774,7 @@ function cmdUser(args) {
     const u = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(args[1], parseInt(args[1]) || 0);
     if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
     db().prepare('DELETE FROM users WHERE id=?').run(u.id);
-    firewallClose(u.port);
-    firewallClose(u.http_port);
+    userFirewallClose(u.port, u.http_port);
     cmdReload();
     console.log(c.green(`✓ 用户 "${u.name}" 已删除`));
     return;
@@ -733,8 +785,8 @@ function cmdUser(args) {
     if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
     const en = sub === 'enable' ? 1 : 0;
     db().prepare('UPDATE users SET enabled=? WHERE id=?').run(en, u.id);
-    if (en) { firewallOpen(u.port); firewallOpen(u.http_port); }
-    else    { firewallClose(u.port); firewallClose(u.http_port); }
+    if (en) { userFirewallOpen(u.port, u.http_port); }
+    else    { userFirewallClose(u.port, u.http_port); }
     cmdReload();
     console.log(c.green(`✓ "${u.name}" 已${sub === 'enable' ? '启用' : '禁用'}`));
     return;
@@ -960,8 +1012,7 @@ function cleanupExpired() {
   if (expired.length) {
     for (const u of expired) {
       db().prepare('DELETE FROM users WHERE id=?').run(u.id);
-      firewallClose(u.port);
-      firewallClose(u.http_port);
+      userFirewallClose(u.port, u.http_port);
     }
     console.log(c.dim(`[cleanup] 删除 ${expired.length} 个过期账户`));
     cmdReload();
@@ -973,23 +1024,38 @@ function cleanupExpired() {
 // ─── 命令：config ────────────────────────────────────────────
 function cmdConfig(args) {
   const key = args[0], val = args[1];
-  const validKeys = ['server_ip', 'log_level', 'merge_inbounds', 'use_upstream'];
+  const validKeys = ['server_ip', 'log_level', 'merge_inbounds', 'use_upstream', 'shared_socks_port', 'shared_http_port', 'admin_password'];
 
   if (!key) {
     console.log(c.bold('\n── 设置 ──────────────────────────────────────'));
-    for (const k of validKeys) console.log(`  ${k.padEnd(20)} = ${getSetting(k) || c.dim('(默认)')}`);
+    for (const k of validKeys) {
+      if (k === 'admin_password') {
+        const v = getSetting(k);
+        console.log(`  ${k.padEnd(20)} = ${v ? c.green('已设置') : c.dim('(未设置，Web UI 无密码保护)')}`);
+      } else {
+        console.log(`  ${k.padEnd(20)} = ${getSetting(k) || c.dim('(默认)')}`);
+      }
+    }
     console.log(c.dim('\n  修改: xray-ctl config <key> <value>'));
-    console.log(c.dim('  server_ip:      xray 监听 IP（发布到客户端 / mihomo 配置）'));
-    console.log(c.dim('  log_level:      debug|info|warning|error|none'));
-    console.log(c.dim('  merge_inbounds: 1=仅替换 inbounds，保留现有 outbounds/routing/balancers（迁移现有配置用）'));
-    console.log(c.dim('  use_upstream:   1=启用上游出站转发'));
+    console.log(c.dim('  server_ip:         xray 监听 IP（发布到客户端 / mihomo 配置）'));
+    console.log(c.dim('  log_level:         debug|info|warning|error|none'));
+    console.log(c.dim('  merge_inbounds:    1=仅替换 inbounds，保留现有 outbounds/routing/balancers'));
+    console.log(c.dim('  use_upstream:      1=启用上游出站转发'));
+    console.log(c.dim('  shared_socks_port: 共享 SOCKS5 端口（所有用户共用，账密区分身份，0=禁用）'));
+    console.log(c.dim('  shared_http_port:  共享 HTTP 端口（所有用户共用，账密区分身份，0=禁用）'));
+    console.log(c.dim('  admin_password:    Web UI 登录密码（空=无密码保护）'));
     return;
   }
   if (!validKeys.includes(key)) { console.log(c.red(`✗ 未知配置项: ${key}`)); return; }
-  if (!val) { console.log(`  ${key} = ${getSetting(key) || c.dim('(默认)')}`); return; }
+  if (!val && val !== '') { console.log(`  ${key} = ${getSetting(key) || c.dim('(默认)')}`); return; }
   setSetting(key, val);
-  console.log(c.green(`✓ ${key} = ${val}`));
-  cmdReload();
+  console.log(c.green(`✓ ${key} = ${key === 'admin_password' ? '******' : val}`));
+  // 共享端口变更时自动管理防火墙
+  if (key === 'shared_socks_port' || key === 'shared_http_port') {
+    const port = parseInt(val);
+    if (port) { firewallOpen(port); console.log(c.dim(`  已开放防火墙端口 ${port}`)); }
+  }
+  if (key !== 'admin_password') cmdReload();
 }
 
 // ─── 命令：lan（无认证 LAN 入站管理）────────────────────────
@@ -1175,6 +1241,43 @@ function startApiServer() {
   const uiFile     = path.join(uiDir, 'index.html');
   const selfFile   = path.join(uiDir, 'self-service.html');
 
+  // ── 认证辅助 ────────────────────────────────────────────────
+  function parseCookies(str) {
+    return (str || '').split(';').reduce((acc, v) => {
+      const [k, ...rest] = v.trim().split('=');
+      if (k) acc[k] = decodeURIComponent(rest.join('='));
+      return acc;
+    }, {});
+  }
+  function makeAuthToken(pwd) {
+    return crypto.createHash('sha256').update(`smartxray:${pwd}`).digest('hex').slice(0, 32);
+  }
+  function isAuthenticated(req) {
+    const adminPwd = getSetting('admin_password', '');
+    if (!adminPwd) return true;   // 未设置密码则无需认证
+    const token = makeAuthToken(adminPwd);
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies._sxtoken === token) return true;
+    const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    if (auth === token || auth === adminPwd) return true;
+    return false;
+  }
+
+  const LOGIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SmartXray Login</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:36px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+h1{font-size:1.3rem;color:#63b3ed;margin-bottom:6px}p.sub{font-size:.82rem;color:#718096;margin-bottom:24px}
+label{display:block;font-size:.8rem;color:#a0aec0;margin-bottom:4px}
+input{width:100%;padding:10px 14px;background:#131720;border:1px solid #2d3748;border-radius:8px;color:#e2e8f0;font-size:.95rem;outline:none;margin-bottom:16px}input:focus{border-color:#63b3ed}
+button{width:100%;padding:10px;background:#3182ce;color:#fff;border:none;border-radius:8px;font-size:.9rem;cursor:pointer}button:hover{background:#2b6cb0}
+.err{color:#fc8181;font-size:.82rem;margin-top:10px;display:none}</style></head>
+<body><div class="card"><h1>🔐 SmartXray</h1><p class="sub">请输入管理密码</p>
+<label>密码</label><input type="password" id="pwd" placeholder="admin password" autofocus onkeydown="if(event.key==='Enter')doLogin()">
+<button onclick="doLogin()">登录</button><p class="err" id="err">密码错误</p></div>
+<script>async function doLogin(){const p=document.getElementById('pwd').value;if(!p)return;
+const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+const d=await r.json();if(d.ok){location.reload()}else{const e=document.getElementById('err');e.style.display='block';e.textContent=d.error||'密码错误'}}</script></body></html>`;
+
   const server = http.createServer((req, res) => {
     const url   = req.url.split('?')[0];
     const method = req.method;
@@ -1187,6 +1290,11 @@ function startApiServer() {
 
     // 静态 UI — 主管理面板
     if (url === '/' || url === '/ui' || url === '/ui/') {
+      // 需要认证才能访问管理面板
+      if (!isAuthenticated(req)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(LOGIN_HTML); return;
+      }
       if (fs.existsSync(uiFile)) {
         const html = fs.readFileSync(uiFile, 'utf8');
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -1195,7 +1303,7 @@ function startApiServer() {
       res.writeHead(404); res.end('UI not found. Run install first.'); return;
     }
 
-    // 静态 UI — 自助申请页面（/self）
+    // 静态 UI — 自助申请页面（/self，无需管理密码）
     if (url === '/self' || url === '/self/') {
       if (getSetting('selfservice_enabled') !== '1') {
         res.writeHead(403); res.end('Self-service is disabled.'); return;
@@ -1215,6 +1323,39 @@ function startApiServer() {
     req.on('end', async () => {
       let json = {};
       try { if (body) json = JSON.parse(body); } catch {}
+
+      // POST /api/login — 登录认证（无需已认证）
+      if (method === 'POST' && url === '/api/login') {
+        const adminPwd = getSetting('admin_password', '');
+        if (!adminPwd) return apiResponse(res, 200, { ok: true });
+        if (json.password !== adminPwd)
+          return apiResponse(res, 401, { error: '密码错误' });
+        const token = makeAuthToken(adminPwd);
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `_sxtoken=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`,
+          'Access-Control-Allow-Origin': '*',
+        });
+        return res.end(JSON.stringify({ ok: true }));
+      }
+
+      // POST /api/logout — 清除认证
+      if (method === 'POST' && url === '/api/logout') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': '_sxtoken=; Path=/; HttpOnly; Max-Age=0',
+          'Access-Control-Allow-Origin': '*',
+        });
+        return res.end(JSON.stringify({ ok: true }));
+      }
+
+      // 自助申请 API 不需要管理密码
+      const isSelfApi = url.startsWith('/api/self/');
+
+      // 其他 API 需要认证
+      if (!isSelfApi && !isAuthenticated(req)) {
+        return apiResponse(res, 401, { error: '未认证，请先登录' });
+      }
 
       // GET /api/status
       if (method === 'GET' && url === '/api/status') {
@@ -1237,12 +1378,19 @@ function startApiServer() {
         const protocol = (json.protocol || 'socks').toLowerCase();
         const username = json.username || randStr(8);
         const password = json.password || randStr(12);
-        let port;
-        try { port = allocPort(SOCKS_MIN, SOCKS_MAX); } catch { return apiResponse(res, 500, { error: '端口不足' }); }
-        const tag = `inbound-${name}-${port}`;
+        let socksPort, httpPort;
         try {
-          db().prepare('INSERT INTO users (name,port,protocol,username,password,tag) VALUES (?,?,?,?,?,?)').run(name, port, protocol, username, password, tag);
-          firewallOpen(port);
+          socksPort = allocPort(SOCKS_MIN, SOCKS_MAX);
+          httpPort  = allocPort(HTTP_MIN,  HTTP_MAX);
+        } catch { return apiResponse(res, 500, { error: '端口不足' }); }
+        const uuid = newUUID();
+        const tag  = `u-${name}-${socksPort}`;
+        try {
+          db().prepare(
+            `INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag)
+             VALUES (?,?,?,?,?,?,?,?)`
+          ).run(name, socksPort, httpPort, uuid, protocol, username, password, tag);
+          userFirewallOpen(socksPort, httpPort);
           cmdReload();
           return apiResponse(res, 201, db().prepare('SELECT * FROM users WHERE name=?').get(name));
         } catch (e) {
@@ -1256,7 +1404,7 @@ function startApiServer() {
         const user = db().prepare('SELECT * FROM users WHERE id=?').get(parseInt(delMatch[1]));
         if (!user) return apiResponse(res, 404, { error: 'not found' });
         db().prepare('DELETE FROM users WHERE id=?').run(user.id);
-        firewallClose(user.port);
+        userFirewallClose(user.port, user.http_port);
         cmdReload();
         return apiResponse(res, 200, { ok: true });
       }
@@ -1268,7 +1416,8 @@ function startApiServer() {
         if (!user) return apiResponse(res, 404, { error: 'not found' });
         if (typeof json.enabled !== 'undefined') {
           db().prepare('UPDATE users SET enabled=? WHERE id=?').run(json.enabled ? 1 : 0, user.id);
-          json.enabled ? firewallOpen(user.port) : firewallClose(user.port);
+          if (json.enabled) userFirewallOpen(user.port, user.http_port);
+          else              userFirewallClose(user.port, user.http_port);
         }
         if (json.password) db().prepare('UPDATE users SET password=? WHERE id=?').run(json.password, user.id);
         if (json.note !== undefined) db().prepare('UPDATE users SET note=? WHERE id=?').run(json.note, user.id);
@@ -1357,16 +1506,17 @@ function startApiServer() {
             `INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag,expires_at)
              VALUES (?,?,?,?,'socks',?,?,?,?)`
           ).run(name, socksPort, httpPort, uuid, username, password, tag, expiresAt);
-          firewallOpen(socksPort);
-          firewallOpen(httpPort);
+          userFirewallOpen(socksPort, httpPort);
           cmdReload();
         } catch (e) { return apiResponse(res, 500, { error: '账户创建失败: ' + e.message }); }
 
         const serverIp = getSetting('server_ip', '');
         const reality  = getRealityConfig();
+        const ssSharedSocks = parseInt(getSetting('shared_socks_port', '0')) || 0;
+        const ssSharedHttp  = parseInt(getSetting('shared_http_port', '0'))  || 0;
         const result = {
-          socks5:     { server: serverIp, port: socksPort, username, password },
-          http:       { server: serverIp, port: httpPort,  username, password },
+          socks5:     { server: serverIp, port: ssSharedSocks || socksPort, username, password },
+          http:       { server: serverIp, port: ssSharedHttp || httpPort,   username, password },
           expires_at: expiresAt,
         };
         if (reality.enabled && reality.publicKey && uuid) {
@@ -1469,6 +1619,23 @@ function startApiServer() {
         }
       }
 
+      // GET /api/help — 返回帮助 markdown 内容
+      if (method === 'GET' && url === '/api/help') {
+        const helpFile = path.join(uiDir, 'help.md');
+        const md = fs.existsSync(helpFile) ? fs.readFileSync(helpFile, 'utf8') : '';
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+        return res.end(md);
+      }
+
+      // GET /api/shared — 返回共享端口信息（自助页面等可读取）
+      if (method === 'GET' && url === '/api/shared') {
+        return apiResponse(res, 200, {
+          shared_socks_port: parseInt(getSetting('shared_socks_port', '0')) || 0,
+          shared_http_port:  parseInt(getSetting('shared_http_port', '0'))  || 0,
+          server_ip: getSetting('server_ip', ''),
+        });
+      }
+
       res.writeHead(404); res.end();
     });
   });
@@ -1478,6 +1645,9 @@ function startApiServer() {
   });
   server.listen(API_PORT, '0.0.0.0', () => {
     console.log(c.dim(`  Web UI: http://0.0.0.0:${API_PORT}/  (or http://<server-ip>:${API_PORT}/)`));
+    // 定期清理过期账户和验证码（每 60 秒）
+    cleanupExpired();
+    setInterval(cleanupExpired, 60 * 1000);
   });
 }
 
@@ -1589,6 +1759,7 @@ ${c.bold('用户管理')} (自动操作防火墙 + 热重载)
 
 ${c.bold('Reality (VLESS+XTLS-Reality 最严格)')}
   xray-ctl reality init [port] [dest]   生成密钥对并启用 Reality
+  xray-ctl reality import <priv> <pub> [port] [shortId] [dest]   导入现有密钥
   xray-ctl reality show                 查看 Reality 配置
   xray-ctl reality disable              禁用 Reality
 
@@ -1599,9 +1770,19 @@ ${c.bold('自助申请 (email 验证 → 临时账户)')}
   xray-ctl selfservice smtp <host> <port> <user> <pass> [from]
 
 ${c.bold('配置')}
-  xray-ctl config
-  xray-ctl config server_ip <IP>
-  xray-ctl config log_level debug|info|warning|error|none
+  xray-ctl config                       查看所有设置
+  xray-ctl config server_ip <IP>        对外 IP
+  xray-ctl config log_level <级别>      debug|info|warning|error|none
+  xray-ctl config shared_socks_port <端口>  共享 SOCKS5 端口（0=禁用，多用户共用）
+  xray-ctl config shared_http_port  <端口>  共享 HTTP 端口（0=禁用，多用户共用）
+  xray-ctl config admin_password <密码>     Web UI 登录密码（空=无密码）
+  xray-ctl config merge_inbounds 1      仅替换 inbounds，保留现有路由
+  xray-ctl config use_upstream 1        启用上游出站转发
+
+${c.bold('LAN 无认证入站')}
+  xray-ctl lan list                     列出 LAN 入站
+  xray-ctl lan add [http|socks] <IP> <端口>  添加入站
+  xray-ctl lan del <tag|端口>           删除入站
 
 ${c.bold('防火墙自动同步')}
   xray-ctl firewall                       查看当前模式
@@ -1617,8 +1798,8 @@ ${c.bold('升级')}
   xray-ctl upgrade            自升级 xray-ctl（从 GitHub Release）
 
 ${c.bold('Web UI')}
-  xray-ctl ui                 http://127.0.0.1:${API_PORT}/
-                              自助页: http://127.0.0.1:${API_PORT}/self
+  xray-ctl ui                 http://0.0.0.0:${API_PORT}/
+                              自助页: http://<server-ip>:${API_PORT}/self
 `);
 }
 
