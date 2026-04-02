@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.4.2';
+const VERSION       = '2.4.3';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -1004,17 +1004,20 @@ function cmdSelfservice(args) {
 
 // ─── 发送验证邮件 ───────────────────────────────────────️
 async function sendMail(to, subject, text) {
+  const host = getSetting('smtp_host');
+  if (!host) throw new Error('SMTP 未配置，请在设置页面配置邮件服务器');
   let nodemailer;
   try { nodemailer = require('nodemailer'); }
   catch { throw new Error('nodemailer 未安装: cd smartxray && npm install'); }
-  const transporter = nodemailer.createTransport({
-    host:   getSetting('smtp_host'),
-    port:   parseInt(getSetting('smtp_port', '587')),
-    secure: getSetting('smtp_secure') === '1',
-    auth:   { user: getSetting('smtp_user'), pass: getSetting('smtp_pass') },
-  });
+  const port   = parseInt(getSetting('smtp_port', '587'));
+  const secure = getSetting('smtp_secure') === '1';
+  const user   = getSetting('smtp_user');
+  const pass   = getSetting('smtp_pass');
+  const opts   = { host, port, secure };
+  if (user && pass) opts.auth = { user, pass };
+  const transporter = nodemailer.createTransport(opts);
   await transporter.sendMail({
-    from:    getSetting('smtp_from') || getSetting('smtp_user'),
+    from:    getSetting('smtp_from') || user,
     to,
     subject,
     text,
@@ -1654,6 +1657,42 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
           shared_http_port:  parseInt(getSetting('shared_http_port', '0'))  || 0,
           server_ip: getSetting('server_ip', ''),
         });
+      }
+
+      // ── SMTP 配置 API ─────────────────────────────────────────
+      // GET /api/smtp
+      if (method === 'GET' && url === '/api/smtp') {
+        return apiResponse(res, 200, {
+          smtp_host:   getSetting('smtp_host', ''),
+          smtp_port:   parseInt(getSetting('smtp_port', '587')) || 587,
+          smtp_secure: getSetting('smtp_secure', '0') === '1',
+          smtp_user:   getSetting('smtp_user', ''),
+          smtp_pass:   getSetting('smtp_pass', '') ? '••••••' : '',
+          smtp_from:   getSetting('smtp_from', ''),
+        });
+      }
+
+      // POST /api/smtp  — 保存 SMTP 配置
+      if (method === 'POST' && url === '/api/smtp') {
+        if (json.smtp_host !== undefined) setSetting('smtp_host', json.smtp_host);
+        if (json.smtp_port !== undefined) setSetting('smtp_port', String(json.smtp_port));
+        if (json.smtp_secure !== undefined) setSetting('smtp_secure', json.smtp_secure ? '1' : '0');
+        if (json.smtp_user !== undefined) setSetting('smtp_user', json.smtp_user);
+        if (json.smtp_pass !== undefined && json.smtp_pass !== '••••••') setSetting('smtp_pass', json.smtp_pass);
+        if (json.smtp_from !== undefined) setSetting('smtp_from', json.smtp_from);
+        return apiResponse(res, 200, { ok: true });
+      }
+
+      // POST /api/smtp/test  — 发送测试邮件
+      if (method === 'POST' && url === '/api/smtp/test') {
+        const testTo = json.to;
+        if (!testTo) return apiResponse(res, 400, { error: '请填写测试收件地址' });
+        try {
+          await sendMail(testTo, '【SmartXray】SMTP 测试', '这是一封测试邮件，如果你收到说明 SMTP 配置正确。\n\n— SmartXray');
+          return apiResponse(res, 200, { ok: true });
+        } catch (e) {
+          return apiResponse(res, 500, { error: 'SMTP 发送失败: ' + e.message });
+        }
       }
 
       res.writeHead(404); res.end();

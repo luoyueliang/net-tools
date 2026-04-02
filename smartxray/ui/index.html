@@ -159,8 +159,8 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
       <button class="btn btn-primary btn-sm" onclick="showPage('users',document.querySelector('[data-page=users]'));openAddModal()">+ 添加用户</button>
     </div>
     <table>
-      <thead><tr><th>名称</th><th>SOCKS5</th><th>HTTP</th><th>VLESS</th><th>账号</th><th>状态</th></tr></thead>
-      <tbody id="overview-users"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>名称</th><th>SOCKS5</th><th>HTTP</th><th>VLESS</th><th>账号</th><th>创建时间</th><th>过期时间</th><th>状态</th></tr></thead>
+      <tbody id="overview-users"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -175,8 +175,8 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
       </div>
     </div>
     <table>
-      <thead><tr><th>ID</th><th>名称</th><th>SOCKS5</th><th>HTTP</th><th>VLESS</th><th>用户名</th><th>密码</th><th>备注</th><th>状态</th><th>操作</th></tr></thead>
-      <tbody id="users-table"><tr><td colspan="10" class="empty">加载中…</td></tr></tbody>
+      <thead><tr><th>ID</th><th>名称</th><th>SOCKS5</th><th>HTTP</th><th>VLESS</th><th>用户名</th><th>密码</th><th>创建时间</th><th>过期时间</th><th>备注</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody id="users-table"><tr><td colspan="12" class="empty">加载中…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -217,6 +217,46 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
     </div>
     <div class="form-footer">
       <button class="btn btn-primary" onclick="saveSettings()">保存并重载</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">📧 SMTP 邮件配置
+      <span style="font-size:12px;color:#718096;font-weight:400">（自助申请验证码发送）</span>
+    </div>
+    <div style="padding:12px 20px 0;font-size:12px;color:#718096">
+      支持标准 SMTP 和 AWS SES SMTP。SES 用户填写 IAM SMTP 凭证（<code style="background:#171923;padding:1px 5px;border-radius:3px">SES → SMTP Settings → Create SMTP credentials</code>）。
+    </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>SMTP 服务器</label>
+        <input id="smtp-host" placeholder="如 email-smtp.us-east-1.amazonaws.com">
+      </div>
+      <div class="form-group">
+        <label>端口</label>
+        <input id="smtp-port" type="number" value="587" placeholder="587">
+      </div>
+      <div class="form-group">
+        <label>用户名 / Access Key</label>
+        <input id="smtp-user" placeholder="SMTP 用户名或 SES SMTP Access Key">
+      </div>
+      <div class="form-group">
+        <label>密码 / Secret Key</label>
+        <input id="smtp-pass" type="password" placeholder="SMTP 密码或 SES SMTP Secret">
+      </div>
+      <div class="form-group">
+        <label>发件人地址（From）</label>
+        <input id="smtp-from" placeholder="noreply@my.mynet.club">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="smtp-secure"> 使用 SSL/TLS（端口 465 勾选）
+        </label>
+      </div>
+    </div>
+    <div class="form-footer">
+      <button class="btn btn-primary" onclick="saveSmtp()">💾 保存</button>
+      <button class="btn btn-gray" onclick="testSmtp()">📨 发送测试邮件</button>
     </div>
   </div>
 </div>
@@ -427,7 +467,7 @@ function showPage(name, el) {
   if (name === 'overview') { loadStatus(); loadOverviewUsers(); }
   if (name === 'users')    loadUsers();
   if (name === 'export')   loadExport();
-  if (name === 'settings') loadSettings();
+  if (name === 'settings') { loadSettings(); loadSmtp(); }
   if (name === 'firewall')      loadFirewall();
   if (name === 'configeditor')  { loadFormConfig(); }
   if (name === 'help')          loadHelp();
@@ -446,7 +486,7 @@ async function loadStatus() {
 async function loadOverviewUsers() {
   const users = await apiFetch('GET', '/api/users');
   const tb = document.getElementById('overview-users');
-  if (!users.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">暂无用户</td></tr>'; return; }
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="8" class="empty">暂无用户</td></tr>'; return; }
   tb.innerHTML = users.map(u => `
     <tr>
       <td><b>${esc(u.name)}</b></td>
@@ -454,6 +494,8 @@ async function loadOverviewUsers() {
       <td class="tag-mono">${u.http_port || '<span style="color:#4a5568">—</span>'}</td>
       <td class="tag-mono">${u.uuid ? '8443' : '<span style="color:#4a5568">—</span>'}</td>
       <td class="tag-mono">${esc(u.username)} / ${esc(u.password)}</td>
+      <td style="font-size:12px;color:#718096">${fmtTime(u.created_at)}</td>
+      <td style="font-size:12px">${fmtExpiry(u.expires_at)}</td>
       <td>${u.enabled ? '<span class="badge green">启用</span>' : '<span class="badge gray">禁用</span>'}</td>
     </tr>`).join('');
 }
@@ -466,7 +508,7 @@ async function apiReload() { await apiFetch('POST','/api/reload'); toast('配置
 async function loadUsers() {
   const users = await apiFetch('GET', '/api/users');
   const tb = document.getElementById('users-table');
-  if (!users.length) { tb.innerHTML = '<tr><td colspan="10" class="empty">暂无用户，点击"添加用户"</td></tr>'; return; }
+  if (!users.length) { tb.innerHTML = '<tr><td colspan="12" class="empty">暂无用户，点击"添加用户"</td></tr>'; return; }
   tb.innerHTML = users.map(u => `
     <tr>
       <td class="tag-mono">${u.id}</td>
@@ -479,6 +521,8 @@ async function loadUsers() {
         ${esc(u.password)}
         <button class="copy-btn" onclick="copyText('${esc(u.password)}')">⧉</button>
       </td>
+      <td style="font-size:12px;color:#718096">${fmtTime(u.created_at)}</td>
+      <td style="font-size:12px">${fmtExpiry(u.expires_at)}</td>
       <td style="color:#718096;font-size:12px">${esc(u.note||'')}</td>
       <td>${u.enabled ? '<span class="badge green">启用</span>' : '<span class="badge gray">禁用</span>'}</td>
       <td>
@@ -646,6 +690,56 @@ async function saveRawConfig() {
 // ── 工具 ─────────────────────────────────────────────────────
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtTime(t) {
+  if (!t) return '<span style="color:#4a5568">—</span>';
+  try { const d = new Date(t + (t.includes('Z') || t.includes('+') ? '' : 'Z')); return d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); } catch { return t; }
+}
+
+function fmtExpiry(t) {
+  if (!t) return '<span style="color:#4a5568">永久</span>';
+  try {
+    const d = new Date(t + (t.includes('Z') || t.includes('+') ? '' : 'Z'));
+    const now = new Date();
+    if (d < now) return '<span class="badge red">已过期</span>';
+    const h = Math.round((d - now) / 3600000);
+    const label = d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+    return h <= 24 ? `<span style="color:#ecc94b">${label} (${h}h)</span>` : `<span style="color:#68d391">${label}</span>`;
+  } catch { return t; }
+}
+
+// ── SMTP 配置 ────────────────────────────────────────────────
+async function loadSmtp() {
+  const d = await apiFetch('GET', '/api/smtp');
+  document.getElementById('smtp-host').value   = d.smtp_host || '';
+  document.getElementById('smtp-port').value   = d.smtp_port || 587;
+  document.getElementById('smtp-user').value   = d.smtp_user || '';
+  document.getElementById('smtp-pass').value   = d.smtp_pass || '';
+  document.getElementById('smtp-from').value   = d.smtp_from || '';
+  document.getElementById('smtp-secure').checked = !!d.smtp_secure;
+}
+
+async function saveSmtp() {
+  const r = await apiFetch('POST', '/api/smtp', {
+    smtp_host:   document.getElementById('smtp-host').value.trim(),
+    smtp_port:   parseInt(document.getElementById('smtp-port').value) || 587,
+    smtp_secure: document.getElementById('smtp-secure').checked,
+    smtp_user:   document.getElementById('smtp-user').value.trim(),
+    smtp_pass:   document.getElementById('smtp-pass').value,
+    smtp_from:   document.getElementById('smtp-from').value.trim(),
+  });
+  if (r.error) { toast('保存失败: ' + r.error, false); return; }
+  toast('SMTP 配置已保存');
+}
+
+async function testSmtp() {
+  const to = prompt('输入测试收件邮箱地址:');
+  if (!to) return;
+  toast('正在发送测试邮件...');
+  const r = await apiFetch('POST', '/api/smtp/test', { to });
+  if (r.error) { toast('发送失败: ' + r.error, false); return; }
+  toast('测试邮件已发送，请检查收件箱');
 }
 // ── Markdown → HTML 渲染器 ───────────────────────────────────
 function renderMarkdown(md) {
