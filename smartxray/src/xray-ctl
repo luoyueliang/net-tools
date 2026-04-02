@@ -21,12 +21,19 @@ const PID_FILE   = `${DATA_DIR}/xray.pid`;
 const MIHOMO_OUT = `${DATA_DIR}/mihomo-proxies.yaml`;   // 导出给 mihomo 使用
 const API_PORT      = 9091;   // xray-ctl Web UI / API
 const XRAY_API_PORT = 9092;   // xray 内置 API
-const SOCKS_MIN     = 10000;
-const SOCKS_MAX     = 14999;
-const HTTP_MIN      = 15000;
-const HTTP_MAX      = 19999;
+// 默认端口区间（可通过 settings 覆盖）
+// 固定用户区间
+const DEF_FIXED_SOCKS_MIN = 10000;
+const DEF_FIXED_SOCKS_MAX = 12999;
+const DEF_FIXED_HTTP_MIN  = 15000;
+const DEF_FIXED_HTTP_MAX  = 17999;
+// 自助用户区间（与固定用户完全隔离）
+const DEF_SS_SOCKS_MIN    = 13000;
+const DEF_SS_SOCKS_MAX    = 14999;
+const DEF_SS_HTTP_MIN     = 18000;
+const DEF_SS_HTTP_MAX     = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.4.4';
+const VERSION       = '2.4.5';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -237,6 +244,25 @@ function isRunning() {
 }
 
 // ─── 端口分配 ────────────────────────────────────────────────
+// 获取固定用户端口区间（可通过 settings 自定义）
+function getFixedPortRange() {
+  return {
+    socksMin: parseInt(getSetting('port_fixed_socks_min', '')) || DEF_FIXED_SOCKS_MIN,
+    socksMax: parseInt(getSetting('port_fixed_socks_max', '')) || DEF_FIXED_SOCKS_MAX,
+    httpMin:  parseInt(getSetting('port_fixed_http_min', ''))  || DEF_FIXED_HTTP_MIN,
+    httpMax:  parseInt(getSetting('port_fixed_http_max', ''))  || DEF_FIXED_HTTP_MAX,
+  };
+}
+// 获取自助用户端口区间
+function getSsPortRange() {
+  return {
+    socksMin: parseInt(getSetting('port_ss_socks_min', '')) || DEF_SS_SOCKS_MIN,
+    socksMax: parseInt(getSetting('port_ss_socks_max', '')) || DEF_SS_SOCKS_MAX,
+    httpMin:  parseInt(getSetting('port_ss_http_min', ''))  || DEF_SS_HTTP_MIN,
+    httpMax:  parseInt(getSetting('port_ss_http_max', ''))  || DEF_SS_HTTP_MAX,
+  };
+}
+
 function allocPort(min, max) {
   const used = new Set(
     db().prepare('SELECT port FROM users').all().map(r => r.port)
@@ -589,14 +615,15 @@ function openwrtFw(action, port) {
 
 function extFwOp(action, port) {
   const mode = getSetting('extfw_mode', 'none');
-  if (mode === 'lightsail') lightsailFw(action, port);
-  else if (mode === 'openwrt') openwrtFw(action, port);
+  if (mode === 'local')     { /* 仅本机防火墙，fwOp 已在 firewallOpen/Close 中调用 */ }
+  else if (mode === 'lightsail') lightsailFw(action, port);
+  else if (mode === 'openwrt')   openwrtFw(action, port);
 }
 
 function firewallOpen(port)  { if (!port) return; fwOp('open',  port); extFwOp('open',  port); }
 function firewallClose(port) { if (!port) return; fwOp('close', port); extFwOp('close', port); }
 
-// 共享端口模式下，用户端口不需要单独开放防火墙
+// 共享端口模式下，固定用户端口不需要单独开放防火墙
 function isSharedMode() {
   return !!(parseInt(getSetting('shared_socks_port', '0')) || parseInt(getSetting('shared_http_port', '0')));
 }
@@ -607,6 +634,16 @@ function userFirewallOpen(socksPort, httpPort) {
 }
 function userFirewallClose(socksPort, httpPort) {
   if (isSharedMode()) return;
+  firewallClose(socksPort);
+  firewallClose(httpPort);
+}
+
+// 自助用户始终使用独占端口，不跳过共享模式检查
+function ssFirewallOpen(socksPort, httpPort) {
+  firewallOpen(socksPort);
+  firewallOpen(httpPort);
+}
+function ssFirewallClose(socksPort, httpPort) {
   firewallClose(socksPort);
   firewallClose(httpPort);
 }
@@ -753,8 +790,9 @@ function cmdUser(args) {
     const hours    = parseInt(args[4]) || 0;
     let socksPort, httpPort;
     try {
-      socksPort = allocPort(SOCKS_MIN, SOCKS_MAX);
-      httpPort  = allocPort(HTTP_MIN,  HTTP_MAX);
+      const pr = getFixedPortRange();
+      socksPort = allocPort(pr.socksMin, pr.socksMax);
+      httpPort  = allocPort(pr.httpMin,  pr.httpMax);
     } catch (e) { console.log(c.red('✗ ' + e.message)); return; }
     const uuid      = newUUID();
     const tag       = `u-${name}-${socksPort}`;
@@ -790,7 +828,8 @@ function cmdUser(args) {
     const u = db().prepare('SELECT * FROM users WHERE name=? OR id=?').get(args[1], parseInt(args[1]) || 0);
     if (!u) { console.log(c.red(`✗ 未找到 "${args[1]}"`)); return; }
     db().prepare('DELETE FROM users WHERE id=?').run(u.id);
-    userFirewallClose(u.port, u.http_port);
+    if (u.name && u.name.startsWith('ss-')) ssFirewallClose(u.port, u.http_port);
+    else userFirewallClose(u.port, u.http_port);
     cmdReload();
     console.log(c.green(`✓ 用户 "${u.name}" 已删除`));
     return;
@@ -952,6 +991,24 @@ function cmdReality(args) {
   console.log(c.dim('用法: xray-ctl reality [init [port] [dest] | import <priv> <pub> [port] [shortId] [dest] | show | disable]'));
 }
 
+// ─── 自助申请开启条件检查 ─────────────────────────────────
+function checkSelfserviceConditions() {
+  const errors = [];
+  // 1. 防火墙模式必须非 none
+  const fwMode = getSetting('extfw_mode', 'none');
+  if (fwMode === 'none') errors.push('防火墙模式未设置（需要 local / lightsail / openwrt 之一）');
+  // 2. 模式相关配置检查
+  if (fwMode === 'lightsail' && !getSetting('lightsail_instance', ''))
+    errors.push('AWS Lightsail 实例名未设置');
+  if (fwMode === 'openwrt') {
+    if (!getSetting('openwrt_host', ''))   errors.push('OpenWrt 路由器 IP 未设置');
+    if (!getSetting('openwrt_dest_ip', '')) errors.push('OpenWrt DNAT 目标 IP 未设置');
+  }
+  // 3. SMTP 必须已配置
+  if (!getSetting('smtp_host', '')) errors.push('SMTP 邮件服务器未配置');
+  return errors;
+}
+
 // ─── 新命令：selfservice ────────────────────────────────
 function cmdSelfservice(args) {
   const sub = args[0];
@@ -960,11 +1017,23 @@ function cmdSelfservice(args) {
     const en    = getSetting('selfservice_enabled') === '1';
     const hours = getSetting('selfservice_hours', '2');
     const smtp  = getSetting('smtp_host') || '未设置';
-    console.log(c.bold('\n── 自助至常 ─────────────────────────────────'));
-    console.log(`  状态  : ${en ? c.green('开启') : c.red('关闭')}`);
-    console.log(`  有效期: ${hours} 小时`);
-    console.log(`  SMTP  : ${smtp}
+    const fwMode = getSetting('extfw_mode', 'none');
+    const fpr = getFixedPortRange();
+    const spr = getSsPortRange();
+    console.log(c.bold('\n── 自助申请 ─────────────────────────────────'));
+    console.log(`  状态    : ${en ? c.green('开启') : c.red('关闭')}`);
+    console.log(`  有效期  : ${hours} 小时`);
+    console.log(`  SMTP    : ${smtp}`);
+    console.log(`  防火墙  : ${fwMode === 'none' ? c.red(fwMode) : c.green(fwMode)}`);
+    console.log(`  固定端口: SOCKS ${fpr.socksMin}-${fpr.socksMax}, HTTP ${fpr.httpMin}-${fpr.httpMax}`);
+    console.log(`  自助端口: SOCKS ${spr.socksMin}-${spr.socksMax}, HTTP ${spr.httpMin}-${spr.httpMax}
 `);
+    const errs = checkSelfserviceConditions();
+    if (errs.length) {
+      console.log(c.yellow('  开启条件检查:'));
+      for (const e of errs) console.log(c.yellow(`    ✗ ${e}`));
+      console.log();
+    }
     console.log(c.dim('  管理:'));
     console.log(c.dim('    xray-ctl selfservice on|off'));
     console.log(c.dim('    xray-ctl selfservice hours <N>'));
@@ -972,7 +1041,20 @@ function cmdSelfservice(args) {
     return;
   }
 
-  if (sub === 'on')  { setSetting('selfservice_enabled', '1'); console.log(c.green('✓ 自助申请已开启')); return; }
+  if (sub === 'on') {
+    // 开启前条件检查
+    const errors = checkSelfserviceConditions();
+    if (errors.length) {
+      console.log(c.red('✗ 无法开启自助申请，以下条件未满足:'));
+      for (const e of errors) console.log(c.red(`  • ${e}`));
+      return;
+    }
+    setSetting('selfservice_enabled', '1');
+    console.log(c.green('✓ 自助申请已开启'));
+    const pr = getSsPortRange();
+    console.log(c.dim(`  自助端口区间: SOCKS ${pr.socksMin}-${pr.socksMax}, HTTP ${pr.httpMin}-${pr.httpMax}`));
+    return;
+  }
   if (sub === 'off') { setSetting('selfservice_enabled', '0'); console.log(c.green('✓ 自助申请已关闭')); return; }
 
   if (sub === 'hours') {
@@ -1031,7 +1113,9 @@ function cleanupExpired() {
   if (expired.length) {
     for (const u of expired) {
       db().prepare('DELETE FROM users WHERE id=?').run(u.id);
-      userFirewallClose(u.port, u.http_port);
+      // 自助用户(ss-)始终关闭独占端口，固定用户走常规逻辑
+      if (u.name && u.name.startsWith('ss-')) ssFirewallClose(u.port, u.http_port);
+      else userFirewallClose(u.port, u.http_port);
     }
     console.log(c.dim(`[cleanup] 删除 ${expired.length} 个过期账户`));
     cmdReload();
@@ -1421,8 +1505,9 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
         const password = json.password || randStr(12);
         let socksPort, httpPort;
         try {
-          socksPort = allocPort(SOCKS_MIN, SOCKS_MAX);
-          httpPort  = allocPort(HTTP_MIN,  HTTP_MAX);
+          const pr = getFixedPortRange();
+          socksPort = allocPort(pr.socksMin, pr.socksMax);
+          httpPort  = allocPort(pr.httpMin,  pr.httpMax);
         } catch { return apiResponse(res, 500, { error: '端口不足' }); }
         const uuid = newUUID();
         const tag  = `u-${name}-${socksPort}`;
@@ -1445,7 +1530,8 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
         const user = db().prepare('SELECT * FROM users WHERE id=?').get(parseInt(delMatch[1]));
         if (!user) return apiResponse(res, 404, { error: 'not found' });
         db().prepare('DELETE FROM users WHERE id=?').run(user.id);
-        userFirewallClose(user.port, user.http_port);
+        if (user.name && user.name.startsWith('ss-')) ssFirewallClose(user.port, user.http_port);
+        else userFirewallClose(user.port, user.http_port);
         cmdReload();
         return apiResponse(res, 200, { ok: true });
       }
@@ -1539,8 +1625,9 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
         const expiresAt = new Date(Date.now() + hours * 3600000).toISOString();
         let socksPort, httpPort;
         try {
-          socksPort = allocPort(SOCKS_MIN, SOCKS_MAX);
-          httpPort  = allocPort(HTTP_MIN,  HTTP_MAX);
+          const pr = getSsPortRange();
+          socksPort = allocPort(pr.socksMin, pr.socksMax);
+          httpPort  = allocPort(pr.httpMin,  pr.httpMax);
         } catch (e) { return apiResponse(res, 500, { error: '端口分配失败' }); }
         const uuid = newUUID();
         const tag  = `ss-${name}-${socksPort}`;
@@ -1549,7 +1636,7 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
             `INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag,expires_at)
              VALUES (?,?,?,?,'socks',?,?,?,?)`
           ).run(name, socksPort, httpPort, uuid, username, password, tag, expiresAt);
-          userFirewallOpen(socksPort, httpPort);
+          ssFirewallOpen(socksPort, httpPort);
           cmdReload();
         } catch (e) { return apiResponse(res, 500, { error: '账户创建失败: ' + e.message }); }
 
@@ -1583,6 +1670,8 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
       // ── 防火墙配置 API ────────────────────────────────────────
       // GET /api/firewall
       if (method === 'GET' && url === '/api/firewall') {
+        const fpr = getFixedPortRange();
+        const spr = getSsPortRange();
         return apiResponse(res, 200, {
           mode:               getSetting('extfw_mode', 'none'),
           lightsail_instance: getSetting('lightsail_instance', ''),
@@ -1590,14 +1679,20 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
           openwrt_user:       getSetting('openwrt_user', 'root'),
           openwrt_ssh_key:    getSetting('openwrt_ssh_key', ''),
           openwrt_dest_ip:    getSetting('openwrt_dest_ip', ''),
+          port_fixed_socks_min: fpr.socksMin, port_fixed_socks_max: fpr.socksMax,
+          port_fixed_http_min:  fpr.httpMin,  port_fixed_http_max:  fpr.httpMax,
+          port_ss_socks_min:    spr.socksMin, port_ss_socks_max:    spr.socksMax,
+          port_ss_http_min:     spr.httpMin,  port_ss_http_max:     spr.httpMax,
         });
       }
 
       // POST /api/firewall
       if (method === 'POST' && url === '/api/firewall') {
-        const fields = ['extfw_mode','lightsail_instance','openwrt_host','openwrt_user','openwrt_ssh_key','openwrt_dest_ip'];
+        const fields = ['extfw_mode','lightsail_instance','openwrt_host','openwrt_user','openwrt_ssh_key','openwrt_dest_ip',
+          'port_fixed_socks_min','port_fixed_socks_max','port_fixed_http_min','port_fixed_http_max',
+          'port_ss_socks_min','port_ss_socks_max','port_ss_http_min','port_ss_http_max'];
         for (const f of fields) {
-          if (json[f] !== undefined) setSetting(f, json[f]);
+          if (json[f] !== undefined) setSetting(f, String(json[f]));
         }
         return apiResponse(res, 200, { ok: true });
       }
@@ -1612,6 +1707,35 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
         }
         if (reality.enabled) extFwOp('open', reality.port);
         return apiResponse(res, 200, { ok: true, synced: users.length });
+      }
+
+      // ── 自助申请 API（管理端）─────────────────────────────────
+      // GET /api/selfservice — 查看状态
+      if (method === 'GET' && url === '/api/selfservice') {
+        const fpr = getFixedPortRange();
+        const spr = getSsPortRange();
+        return apiResponse(res, 200, {
+          enabled: getSetting('selfservice_enabled') === '1',
+          hours:   parseInt(getSetting('selfservice_hours', '2')) || 2,
+          conditions: checkSelfserviceConditions(),
+          port_ranges: { fixed: fpr, ss: spr },
+        });
+      }
+
+      // POST /api/selfservice  { enabled, hours }
+      if (method === 'POST' && url === '/api/selfservice') {
+        if (typeof json.enabled !== 'undefined') {
+          if (json.enabled) {
+            const errors = checkSelfserviceConditions();
+            if (errors.length) return apiResponse(res, 400, { error: '无法开启: ' + errors.join('; ') });
+          }
+          setSetting('selfservice_enabled', json.enabled ? '1' : '0');
+        }
+        if (json.hours !== undefined) {
+          const h = parseInt(json.hours);
+          if (h >= 1) setSetting('selfservice_hours', String(h));
+        }
+        return apiResponse(res, 200, { ok: true });
       }
 
       // ── 设置 API (覆盖原来的只读 status 获取) ────────────────

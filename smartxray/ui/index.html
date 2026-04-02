@@ -264,16 +264,17 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
 <!-- ── 防火墙 ── -->
 <div class="page" id="page-firewall">
   <div class="card">
-    <div class="card-header">外部防火墙自动同步</div>
+    <div class="card-header">防火墙与端口管理</div>
     <div class="form-grid">
       <div class="form-group" style="grid-column:1/-1">
-        <label>模式</label>
+        <label>防火墙模式</label>
         <select id="fw-mode" onchange="onFwModeChange()">
           <option value="none">未启用</option>
+          <option value="local">本机直连（公网 IP 主机，操作本机防火墙）</option>
           <option value="lightsail">AWS Lightsail 安全组</option>
           <option value="openwrt">OpenWrt DNAT 转发</option>
         </select>
-        <span style="font-size:12px;color:#718096;margin-top:4px">启用后添加/删除用户时会自动同步对应防火墙端口</span>
+        <span style="font-size:12px;color:#718096;margin-top:4px">启用后添加/删除用户时会自动同步对应防火墙端口。自助申请功能要求此项非"未启用"。</span>
       </div>
     </div>
     <!-- Lightsail 字段 -->
@@ -315,6 +316,51 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
     <div class="form-footer">
       <button class="btn btn-primary" onclick="saveFirewall()">💾 保存</button>
       <button class="btn btn-gray" onclick="syncFirewall()">⟳ 同步全部端口</button>
+    </div>
+  </div>
+
+  <!-- 端口区间配置 -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">🔢 端口区间配置
+      <span style="font-size:12px;color:#718096;font-weight:400">（管理员创建的固定用户 与 自助注册用户 使用独立端口区间）</span>
+    </div>
+    <div style="padding:12px 20px 0;font-size:12px;color:#718096">
+      固定用户和自助用户的端口区间完全隔离，防止自助临时账户占用永久用户端口。修改后仅影响新创建的用户。
+    </div>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:1/-1"><label style="font-weight:600;color:#63b3ed;font-size:13px">固定用户端口</label></div>
+      <div class="form-group"><label>SOCKS 起始</label><input id="fw-fp-socks-min" type="number" placeholder="10000"></div>
+      <div class="form-group"><label>SOCKS 结束</label><input id="fw-fp-socks-max" type="number" placeholder="12999"></div>
+      <div class="form-group"><label>HTTP 起始</label><input id="fw-fp-http-min" type="number" placeholder="15000"></div>
+      <div class="form-group"><label>HTTP 结束</label><input id="fw-fp-http-max" type="number" placeholder="17999"></div>
+      <div class="form-group" style="grid-column:1/-1"><label style="font-weight:600;color:#68d391;font-size:13px">自助用户端口</label></div>
+      <div class="form-group"><label>SOCKS 起始</label><input id="fw-sp-socks-min" type="number" placeholder="13000"></div>
+      <div class="form-group"><label>SOCKS 结束</label><input id="fw-sp-socks-max" type="number" placeholder="14999"></div>
+      <div class="form-group"><label>HTTP 起始</label><input id="fw-sp-http-min" type="number" placeholder="18000"></div>
+      <div class="form-group"><label>HTTP 结束</label><input id="fw-sp-http-max" type="number" placeholder="19999"></div>
+    </div>
+    <div class="form-footer">
+      <button class="btn btn-primary" onclick="saveFirewall()">💾 保存端口配置</button>
+    </div>
+  </div>
+
+  <!-- 自助申请管理 -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">🔑 自助申请管理</div>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:1/-1;display:flex;flex-direction:row;align-items:center;gap:12px">
+        <label style="font-weight:600;flex-shrink:0">自助申请</label>
+        <button class="btn btn-sm" id="ss-toggle-btn" onclick="toggleSelfservice()">加载中…</button>
+        <span id="ss-status-text" style="font-size:12px;color:#718096"></span>
+      </div>
+      <div class="form-group">
+        <label>账户有效期（小时）</label>
+        <input id="ss-hours" type="number" value="2" min="1" placeholder="2">
+      </div>
+    </div>
+    <div id="ss-conditions" style="padding:0 20px 12px;font-size:12px;display:none"></div>
+    <div class="form-footer">
+      <button class="btn btn-primary" onclick="saveSelfservice()">💾 保存</button>
     </div>
   </div>
 </div>
@@ -607,7 +653,18 @@ async function loadFirewall() {
   document.getElementById('fw-openwrt-user').value = d.openwrt_user || 'root';
   document.getElementById('fw-openwrt-key').value  = d.openwrt_ssh_key || '';
   document.getElementById('fw-openwrt-dest').value = d.openwrt_dest_ip || '';
+  // 端口区间
+  document.getElementById('fw-fp-socks-min').value = d.port_fixed_socks_min || '';
+  document.getElementById('fw-fp-socks-max').value = d.port_fixed_socks_max || '';
+  document.getElementById('fw-fp-http-min').value  = d.port_fixed_http_min || '';
+  document.getElementById('fw-fp-http-max').value  = d.port_fixed_http_max || '';
+  document.getElementById('fw-sp-socks-min').value = d.port_ss_socks_min || '';
+  document.getElementById('fw-sp-socks-max').value = d.port_ss_socks_max || '';
+  document.getElementById('fw-sp-http-min').value  = d.port_ss_http_min || '';
+  document.getElementById('fw-sp-http-max').value  = d.port_ss_http_max || '';
   onFwModeChange();
+  // 加载自助申请状态
+  loadSelfservice();
 }
 
 function onFwModeChange() {
@@ -625,16 +682,69 @@ async function saveFirewall() {
     openwrt_user:       document.getElementById('fw-openwrt-user').value.trim() || 'root',
     openwrt_ssh_key:    document.getElementById('fw-openwrt-key').value.trim(),
     openwrt_dest_ip:    document.getElementById('fw-openwrt-dest').value.trim(),
+    port_fixed_socks_min: parseInt(document.getElementById('fw-fp-socks-min').value) || undefined,
+    port_fixed_socks_max: parseInt(document.getElementById('fw-fp-socks-max').value) || undefined,
+    port_fixed_http_min:  parseInt(document.getElementById('fw-fp-http-min').value) || undefined,
+    port_fixed_http_max:  parseInt(document.getElementById('fw-fp-http-max').value) || undefined,
+    port_ss_socks_min:    parseInt(document.getElementById('fw-sp-socks-min').value) || undefined,
+    port_ss_socks_max:    parseInt(document.getElementById('fw-sp-socks-max').value) || undefined,
+    port_ss_http_min:     parseInt(document.getElementById('fw-sp-http-min').value) || undefined,
+    port_ss_http_max:     parseInt(document.getElementById('fw-sp-http-max').value) || undefined,
   };
   const r = await apiFetch('POST', '/api/firewall', payload);
   if (r.error) { toast('保存失败: ' + r.error, false); return; }
   toast('防火墙配置已保存');
+  loadSelfservice();
 }
 
 async function syncFirewall() {
   const r = await apiFetch('POST', '/api/firewall/sync');
   if (r.error) { toast('同步失败: ' + r.error, false); return; }
   toast(`端口同步完成（${r.synced || 0} 个用户）`);
+}
+
+// ── 自助申请 ──────────────────────────────────────────────────
+async function loadSelfservice() {
+  const d = await apiFetch('GET', '/api/selfservice');
+  const btn = document.getElementById('ss-toggle-btn');
+  const txt = document.getElementById('ss-status-text');
+  document.getElementById('ss-hours').value = d.hours || 2;
+  if (d.enabled) {
+    btn.textContent = '🔴 关闭'; btn.className = 'btn btn-sm btn-red';
+    btn.style.background = '#822727'; btn.style.color = '#fff';
+    txt.textContent = '当前已开启';
+    txt.style.color = '#68d391';
+  } else {
+    btn.textContent = '🟢 开启'; btn.className = 'btn btn-sm btn-green';
+    btn.style.background = '#276749'; btn.style.color = '#fff';
+    txt.textContent = '当前已关闭';
+    txt.style.color = '#fc8181';
+  }
+  const condDiv = document.getElementById('ss-conditions');
+  if (d.conditions && d.conditions.length) {
+    condDiv.style.display = '';
+    condDiv.innerHTML = '<span style="color:#f6ad55">⚠ 开启条件未满足:</span><ul style="margin:4px 0 0 16px;color:#fc8181">' +
+      d.conditions.map(c => '<li>' + c + '</li>').join('') + '</ul>';
+  } else {
+    condDiv.style.display = 'none';
+    condDiv.innerHTML = '';
+  }
+}
+
+async function toggleSelfservice() {
+  const d = await apiFetch('GET', '/api/selfservice');
+  const newState = !d.enabled;
+  const r = await apiFetch('POST', '/api/selfservice', { enabled: newState });
+  if (r.error) { toast(r.error, false); return; }
+  toast(newState ? '自助申请已开启' : '自助申请已关闭');
+  loadSelfservice();
+}
+
+async function saveSelfservice() {
+  const hours = parseInt(document.getElementById('ss-hours').value) || 2;
+  const r = await apiFetch('POST', '/api/selfservice', { hours });
+  if (r.error) { toast('保存失败: ' + r.error, false); return; }
+  toast('自助申请设置已保存');
 }
 
 // ── 配置编辑器 ────────────────────────────────────────────────
