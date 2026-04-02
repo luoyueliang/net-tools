@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.4.1';
+const VERSION       = '2.4.2';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -40,6 +40,10 @@ const c = {
   bold:   s => `\x1b[1m${s}\x1b[0m`,
   dim:    s => `\x1b[2m${s}\x1b[0m`,
 };
+
+// ─── 防止未捕获异常导致静默崩溃 ──────────────────────────────
+process.on('uncaughtException',  e => console.error(c.red('未捕获异常:'), e));
+process.on('unhandledRejection', e => console.error(c.red('未处理 Promise 拒绝:'), e));
 
 // ─── 工具函数 ────────────────────────────────────────────────
 function run(cmd) {
@@ -660,11 +664,13 @@ async function cmdStart() {
   ensureDir(path.dirname(LOG_FILE));
   buildConfig();
   console.log('启动 Xray...');
+  const logFd = fs.openSync(LOG_FILE, 'a');
   const child = spawn(BIN, ['run', '-c', XRAY_CONF], {
     detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['ignore', logFd, logFd],
   });
   child.unref();
+  fs.closeSync(logFd);
   writePid(child.pid);
   await new Promise(r => setTimeout(r, 1200));
   if (isRunning()) {
@@ -674,6 +680,16 @@ async function cmdStart() {
     console.log(c.red('✗ 启动失败，检查日志: ' + LOG_FILE));
   }
 }
+
+// ─── 进程退出时清理 Xray ─────────────────────────────────────
+function cleanupOnExit() {
+  const pid = readPid();
+  if (pid) {
+    try { process.kill(pid, 'SIGTERM'); } catch { /**/ }
+  }
+}
+process.on('SIGTERM', () => { cleanupOnExit(); process.exit(0); });
+process.on('SIGINT',  () => { cleanupOnExit(); process.exit(0); });
 
 // ─── 命令：stop ──────────────────────────────────────────────
 function cmdStop() {
@@ -1235,7 +1251,9 @@ function apiResponse(res, code, data) {
   res.end(body);
 }
 
+let _apiServerRunning = false;
 function startApiServer() {
+  if (_apiServerRunning) return;  // 防止 web UI 触发 start 时重复启动
   // 使用安装后的运行时 UI 路径，而非 __dirname（部署后 __dirname=/usr/local/bin/）
   const uiDir      = path.join(DATA_DIR, 'ui');
   const uiFile     = path.join(uiDir, 'index.html');
@@ -1433,7 +1451,9 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
 
       // POST /api/start
       if (method === 'POST' && url === '/api/start') {
-        cmdStart().then(() => apiResponse(res, 200, { running: isRunning() }));
+        cmdStart()
+          .then(() => apiResponse(res, 200, { running: isRunning() }))
+          .catch(e => apiResponse(res, 500, { error: e.message }));
         return;
       }
 
@@ -1642,8 +1662,10 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
 
   server.on('error', e => {
     if (e.code === 'EADDRINUSE') console.log(c.dim(`  API server 已在运行 (port ${API_PORT})`));
+    else console.log(c.red(`  API server 错误: ${e.message}`));
   });
   server.listen(API_PORT, '0.0.0.0', () => {
+    _apiServerRunning = true;
     console.log(c.dim(`  Web UI: http://0.0.0.0:${API_PORT}/  (or http://<server-ip>:${API_PORT}/)`));
     // 定期清理过期账户和验证码（每 60 秒）
     cleanupExpired();

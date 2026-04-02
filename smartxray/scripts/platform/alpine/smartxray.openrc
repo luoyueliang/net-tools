@@ -1,15 +1,16 @@
 #!/sbin/openrc-run
 # SmartXray OpenRC init script (Alpine Linux)
+# 由 Node.js 进程统一管理 Xray 二进制和 Web UI API Server
 
 name="smartxray"
 description="SmartXray - Xray Server Manager"
-command="/usr/local/bin/xray"
-command_args="run -c /home/__USER__/.config/smartxray/config.json"
+command="/usr/local/bin/xray-ctl"
+command_args="start"
 command_user="__USER__"
 command_background=true
-pidfile="/run/smartxray.pid"
-output_log="/home/__USER__/.config/smartxray/logs/xray.log"
-error_log="/home/__USER__/.config/smartxray/logs/xray.log"
+pidfile="/run/smartxray-node.pid"
+output_log="/home/__USER__/.config/smartxray/logs/smartxray.log"
+error_log="/home/__USER__/.config/smartxray/logs/smartxray.log"
 
 depend() {
     need net
