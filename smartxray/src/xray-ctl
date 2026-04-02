@@ -26,7 +26,7 @@ const SOCKS_MAX     = 14999;
 const HTTP_MIN      = 15000;
 const HTTP_MAX      = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.4.3';
+const VERSION       = '2.4.4';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -1261,6 +1261,7 @@ function startApiServer() {
   const uiDir      = path.join(DATA_DIR, 'ui');
   const uiFile     = path.join(uiDir, 'index.html');
   const selfFile   = path.join(uiDir, 'self-service.html');
+  const portalFile = path.join(uiDir, 'portal.html');
 
   // ── 认证辅助 ────────────────────────────────────────────────
   function parseCookies(str) {
@@ -1309,8 +1310,27 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
       res.end(); return;
     }
 
-    // 静态 UI — 主管理面板
-    if (url === '/' || url === '/ui' || url === '/ui/') {
+    // 静态 UI — 公共门户页面（/，无需认证）
+    if (url === '/' || url === '/portal' || url === '/portal/') {
+      if (fs.existsSync(portalFile)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(fs.readFileSync(portalFile, 'utf8')); return;
+      }
+      // portal.html 不存在时 fallback 到管理面板登录
+      if (url === '/') {
+        if (!isAuthenticated(req)) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(LOGIN_HTML); return;
+        }
+        if (fs.existsSync(uiFile)) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(fs.readFileSync(uiFile, 'utf8')); return;
+        }
+      }
+    }
+
+    // 静态 UI — 主管理面板（/admin）
+    if (url === '/admin' || url === '/admin/' || url === '/ui' || url === '/ui/') {
       // 需要认证才能访问管理面板
       if (!isAuthenticated(req)) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -1370,11 +1390,11 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
         return res.end(JSON.stringify({ ok: true }));
       }
 
-      // 自助申请 API 不需要管理密码
-      const isSelfApi = url.startsWith('/api/self/');
+      // 公开 API（不需要管理密码）
+      const isPublicApi = url.startsWith('/api/self/') || url === '/api/shared' || url === '/api/public/info' || url === '/api/help';
 
       // 其他 API 需要认证
-      if (!isSelfApi && !isAuthenticated(req)) {
+      if (!isPublicApi && !isAuthenticated(req)) {
         return apiResponse(res, 401, { error: '未认证，请先登录' });
       }
 
@@ -1657,6 +1677,19 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
           shared_http_port:  parseInt(getSetting('shared_http_port', '0'))  || 0,
           server_ip: getSetting('server_ip', ''),
         });
+      }
+
+      // GET /api/public/info — 公开信息（门户页配置生成器使用，无需认证）
+      if (method === 'GET' && url === '/api/public/info') {
+        const reality = getRealityConfig();
+        const result = { reality_enabled: reality.enabled };
+        if (reality.enabled) {
+          result.reality_port   = reality.port;
+          result.reality_sni    = reality.serverNames[0] || '';
+          result.reality_pubkey = reality.publicKey || '';
+          result.reality_sid    = reality.shortIds[0] || '';
+        }
+        return apiResponse(res, 200, result);
       }
 
       // ── SMTP 配置 API ─────────────────────────────────────────

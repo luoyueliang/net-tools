@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartXray — 安全代理服务</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+a{color:#63b3ed;text-decoration:none}a:hover{text-decoration:underline}
+
+/* Nav */
+.topnav{position:fixed;top:0;left:0;right:0;height:56px;background:#1a1d27ee;border-bottom:1px solid #2d3748;display:flex;align-items:center;padding:0 24px;z-index:100;backdrop-filter:blur(12px)}
+.topnav .brand{font-size:18px;font-weight:700;color:#63b3ed;margin-right:32px;white-space:nowrap}
+.topnav .brand small{font-size:11px;font-weight:400;color:#718096;margin-left:6px}
+.topnav nav{display:flex;gap:4px}
+.topnav nav a{padding:8px 16px;border-radius:6px;color:#a0aec0;font-size:14px;cursor:pointer;transition:.15s}
+.topnav nav a:hover,.topnav nav a.active{background:#2d3748;color:#fff;text-decoration:none}
+.topnav .right{margin-left:auto;display:flex;align-items:center;gap:12px}
+
+/* Main */
+.main{max-width:900px;margin:0 auto;padding:80px 20px 40px}
+.section{display:none}.section.active{display:block}
+
+/* Hero */
+.hero{text-align:center;padding:60px 0 40px}
+.hero h1{font-size:2.2rem;font-weight:800;background:linear-gradient(135deg,#63b3ed,#68d391);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:12px}
+.hero p{font-size:1.1rem;color:#a0aec0;max-width:600px;margin:0 auto 28px;line-height:1.7}
+.hero .actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.hero .actions a{display:inline-flex;align-items:center;gap:6px}
+.features{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:40px}
+.feat{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;padding:20px}
+.feat .ico{font-size:28px;margin-bottom:10px}
+.feat h3{color:#e2e8f0;font-size:15px;margin-bottom:4px}
+.feat p{color:#718096;font-size:13px;line-height:1.5}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:500;border:none;cursor:pointer;transition:.15s;text-decoration:none}
+.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover{background:#2b6cb0;text-decoration:none}
+.btn-green{background:#276749;color:#fff}.btn-green:hover{background:#2f855a;text-decoration:none}
+.btn-gray{background:#2d3748;color:#e2e8f0}.btn-gray:hover{background:#4a5568;text-decoration:none}
+.btn-sm{padding:7px 14px;font-size:13px}
+
+/* Cards */
+.card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;overflow:hidden;margin-bottom:20px}
+.card-header{padding:14px 20px;border-bottom:1px solid #2d3748;font-weight:600;font-size:15px}
+.card-body{padding:20px}
+.card-body p{color:#a0aec0;font-size:14px;line-height:1.7;margin-bottom:12px}
+.card-body h3{font-size:15px;color:#e2e8f0;margin:20px 0 8px}
+.card-body h3:first-child{margin-top:0}
+.card-body ul{margin:8px 0 8px 20px;color:#a0aec0;font-size:14px;line-height:1.7}
+.card-body li{margin:4px 0}
+code{background:#171923;padding:2px 6px;border-radius:4px;font-family:'SFMono-Regular',Consolas,monospace;font-size:.88em;color:#68d391}
+pre{background:#171923;border:1px solid #2d3748;border-radius:8px;padding:14px;font-size:12px;overflow-x:auto;line-height:1.6;color:#a0aec0;font-family:'SFMono-Regular',Consolas,monospace;margin:10px 0}
+
+/* Download */
+.dl-card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;padding:20px;display:flex;gap:16px;margin-bottom:14px;align-items:flex-start}
+.dl-icon{font-size:36px;flex-shrink:0}
+.dl-info h3{font-size:15px;color:#e2e8f0;margin-bottom:4px}
+.dl-info p{font-size:13px;color:#718096;line-height:1.5;margin-bottom:8px}
+.dl-links{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Config gen */
+.config-gen{background:#131720;border:1px solid #2d3748;border-radius:10px;padding:20px;margin-top:16px}
+.config-gen h3{font-size:15px;color:#63b3ed;margin-bottom:4px}
+.config-gen p{font-size:12px;color:#718096;margin-bottom:14px}
+.form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.form-row label{font-size:12px;color:#a0aec0;display:flex;flex-direction:column;gap:4px;flex:1;min-width:140px}
+.form-row input,.form-row select{background:#0f1117;border:1px solid #2d3748;border-radius:6px;padding:8px 10px;color:#e2e8f0;font-size:13px;outline:none}
+.form-row input:focus,.form-row select:focus{border-color:#63b3ed}
+.config-preview{position:relative}
+.config-preview textarea{width:100%;background:#0f1117;border:1px solid #2d3748;border-radius:8px;padding:14px;color:#a0aec0;font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;line-height:1.5;resize:vertical;min-height:200px}
+.config-actions{display:flex;gap:8px;margin-top:10px}
+
+/* Help */
+.help-body h1{font-size:1.6em;font-weight:700;color:#63b3ed;margin:24px 0 12px;padding-bottom:6px;border-bottom:1px solid #2d3748}
+.help-body h2{font-size:1.3em;font-weight:600;color:#e2e8f0;margin:20px 0 10px}
+.help-body h3{font-size:1.1em;font-weight:600;color:#a0aec0;margin:16px 0 8px}
+.help-body p{margin:8px 0;color:#cbd5e0;font-size:14px;line-height:1.7}
+.help-body strong{color:#e2e8f0}
+.help-body em{color:#a0aec0;font-style:italic}
+.help-body code{background:#171923;padding:1px 6px;border-radius:4px;font-family:'SFMono-Regular',Consolas,monospace;font-size:.88em;color:#68d391}
+.help-body pre{background:#171923;border:1px solid #2d3748;border-radius:8px;padding:14px 16px;overflow-x:auto;margin:10px 0;line-height:1.6}
+.help-body pre code{background:none;padding:0;color:#a0aec0;font-size:12px}
+.help-body blockquote{border-left:3px solid #4a90d9;padding:8px 14px;margin:10px 0;background:#171923;border-radius:0 6px 6px 0;color:#90cdf4;font-size:.92em}
+.help-body ul,.help-body ol{margin:8px 0 8px 20px;color:#cbd5e0}
+.help-body li{margin:4px 0}
+.help-body hr{border:none;border-top:1px solid #2d3748;margin:20px 0}
+.help-body table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+.help-body th{padding:8px 12px;text-align:left;background:#171923;color:#718096;border:1px solid #2d3748;font-weight:500}
+.help-body td{padding:8px 12px;border:1px solid #2d3748;color:#cbd5e0}
+.help-body a{color:#63b3ed}
+
+/* Self-service embed */
+.self-section iframe{width:100%;border:none;border-radius:10px;min-height:600px;background:#1a1d27}
+.self-disabled{text-align:center;padding:60px 20px;color:#718096}
+
+/* Toast */
+#p-toast{position:fixed;bottom:24px;right:24px;background:#276749;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;z-index:200;pointer-events:none}
+#p-toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<header class="topnav">
+  <div class="brand">SmartXray<small>Proxy Service</small></div>
+  <nav>
+    <a class="active" onclick="go('home',this)">首页</a>
+    <a onclick="go('download',this)">客户端下载</a>
+    <a onclick="go('help',this)">帮助文档</a>
+    <a onclick="go('self',this)">自助申请</a>
+  </nav>
+  <div class="right">
+    <a href="/admin" class="btn btn-gray btn-sm" style="font-size:12px">🔒 管理</a>
+  </div>
+</header>
+
+<div class="main">
+
+<!-- ══════════════════════ 首页 ══════════════════════ -->
+<div class="section active" id="sec-home">
+  <div class="hero">
+    <h1>安全 · 快速 · 零配置</h1>
+    <p>SmartXray 提供多协议代理服务，支持 SOCKS5、HTTP 和 VLESS+Reality（最强流量混淆），通过 mihomo 客户端一键接入。</p>
+    <div class="actions">
+      <a class="btn btn-primary" onclick="go('download',document.querySelector('[onclick*=download]'))">⬇ 下载客户端</a>
+      <a class="btn btn-green" onclick="go('self',document.querySelector('[onclick*=self]'))">🔑 申请临时账户</a>
+    </div>
+  </div>
+  <div class="features">
+    <div class="feat"><div class="ico">🛡️</div><h3>VLESS + Reality</h3><p>最先进的流量混淆技术，伪装成正常 HTTPS 流量，不可被审查系统检测。</p></div>
+    <div class="feat"><div class="ico">⚡</div><h3>多协议支持</h3><p>同时提供 SOCKS5、HTTP 代理和 VLESS 三种协议，满足不同场景需求。</p></div>
+    <div class="feat"><div class="ico">📱</div><h3>全平台客户端</h3><p>推荐 mihomo 内核，macOS / Windows / Linux / Android / iOS 全覆盖。</p></div>
+    <div class="feat"><div class="ico">🔧</div><h3>一键配置</h3><p>输入账户信息即可在线生成完整的 mihomo config.yaml，复制粘贴开始使用。</p></div>
+  </div>
+</div>
+
+<!-- ══════════════════════ 客户端下载 ══════════════════════ -->
+<div class="section" id="sec-download">
+  <h2 style="font-size:1.4rem;margin-bottom:20px">📦 客户端下载</h2>
+
+  <div class="card">
+    <div class="card-header">推荐客户端：mihomo（原 Clash.Meta）</div>
+    <div class="card-body">
+      <p><strong>mihomo</strong> 是一个高性能的规则代理内核，支持 SOCKS5/HTTP/VLESS+Reality 等多种协议，配合图形化管理面板使用，是目前最强大的代理客户端方案。</p>
+      <h3>📱 图形化客户端（推荐）</h3>
+      <div class="dl-card">
+        <div class="dl-icon">🍎</div>
+        <div class="dl-info">
+          <h3>macOS — ClashX.Meta</h3>
+          <p>基于 mihomo 内核的 macOS 原生客户端，菜单栏快速切换。</p>
+          <div class="dl-links">
+            <a class="btn btn-primary btn-sm" href="https://github.com/MetaCubeX/ClashX.Meta/releases/latest" target="_blank">GitHub 下载</a>
+          </div>
+        </div>
+      </div>
+      <div class="dl-card">
+        <div class="dl-icon">🪟</div>
+        <div class="dl-info">
+          <h3>Windows — Clash Verge Rev</h3>
+          <p>美观易用的 Windows/macOS/Linux 跨平台客户端，内置 mihomo 内核。</p>
+          <div class="dl-links">
+            <a class="btn btn-primary btn-sm" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank">GitHub 下载</a>
+          </div>
+        </div>
+      </div>
+      <div class="dl-card">
+        <div class="dl-icon">🐧</div>
+        <div class="dl-info">
+          <h3>Linux — Clash Verge Rev / mihomo TUI</h3>
+          <p>桌面用户推荐 Clash Verge Rev；服务器用户可直接使用 mihomo 内核命令行。</p>
+          <div class="dl-links">
+            <a class="btn btn-primary btn-sm" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank">Clash Verge Rev</a>
+            <a class="btn btn-gray btn-sm" href="https://github.com/MetaCubeX/mihomo/releases/latest" target="_blank">mihomo 内核</a>
+          </div>
+        </div>
+      </div>
+      <div class="dl-card">
+        <div class="dl-icon">📱</div>
+        <div class="dl-info">
+          <h3>Android — ClashMeta for Android</h3>
+          <p>Android 专属 mihomo 客户端。</p>
+          <div class="dl-links">
+            <a class="btn btn-primary btn-sm" href="https://github.com/MetaCubeX/ClashMetaForAndroid/releases/latest" target="_blank">GitHub 下载</a>
+          </div>
+        </div>
+      </div>
+      <div class="dl-card">
+        <div class="dl-icon">🍏</div>
+        <div class="dl-info">
+          <h3>iOS — Stash / Shadowrocket</h3>
+          <p>Stash 原生支持 mihomo 配置格式；Shadowrocket 支持 VLESS+Reality。均需在 App Store (非中国区) 购买。</p>
+          <div class="dl-links">
+            <a class="btn btn-primary btn-sm" href="https://apps.apple.com/app/stash/id1596063349" target="_blank">Stash (App Store)</a>
+            <a class="btn btn-gray btn-sm" href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank">Shadowrocket</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- mihomo 配置生成器 -->
+  <div class="config-gen" id="config-gen">
+    <h3>🔧 mihomo 配置生成器</h3>
+    <p>输入你的代理账户信息，自动生成可用的 mihomo <code>config.yaml</code> 完整配置文件。</p>
+    <div class="form-row">
+      <label>服务器地址
+        <input id="cg-server" placeholder="如 1.2.3.4 或 home.example.com">
+      </label>
+    </div>
+    <div class="form-row">
+      <label>SOCKS5 端口
+        <input id="cg-socks-port" type="number" placeholder="13350">
+      </label>
+      <label>HTTP 端口
+        <input id="cg-http-port" type="number" placeholder="17890">
+      </label>
+    </div>
+    <div class="form-row">
+      <label>用户名
+        <input id="cg-username" placeholder="代理用户名">
+      </label>
+      <label>密码
+        <input id="cg-password" placeholder="代理密码">
+      </label>
+    </div>
+    <div class="form-row">
+      <label>
+        <span style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="cg-vless" onchange="toggleVless()"> 启用 VLESS+Reality（如果有）
+        </span>
+      </label>
+    </div>
+    <div id="cg-vless-fields" style="display:none">
+      <div class="form-row">
+        <label>VLESS 端口
+          <input id="cg-vless-port" type="number" placeholder="8443">
+        </label>
+        <label>UUID
+          <input id="cg-vless-uuid" placeholder="xxxxxxxx-xxxx-...">
+        </label>
+      </div>
+      <div class="form-row">
+        <label>SNI
+          <input id="cg-vless-sni" placeholder="www.microsoft.com">
+        </label>
+        <label>Public Key
+          <input id="cg-vless-pk" placeholder="Reality public key">
+        </label>
+      </div>
+      <div class="form-row">
+        <label>Short ID（可留空）
+          <input id="cg-vless-sid" placeholder="">
+        </label>
+      </div>
+    </div>
+    <div class="config-actions" style="margin-bottom:12px">
+      <button class="btn btn-primary" onclick="generateConfig()">⚙ 生成配置</button>
+      <button class="btn btn-gray" onclick="fillFromServer()">📡 从服务器获取</button>
+    </div>
+    <div class="config-preview" id="config-preview" style="display:none">
+      <textarea id="cg-output" readonly></textarea>
+      <div class="config-actions">
+        <button class="btn btn-primary btn-sm" onclick="copyConfig()">📋 复制配置</button>
+        <button class="btn btn-green btn-sm" onclick="downloadConfig()">⬇ 下载 config.yaml</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:20px">
+    <div class="card-header">📖 客户端使用说明</div>
+    <div class="card-body">
+      <h3>1. 下载并安装客户端</h3>
+      <p>选择适合你操作系统的客户端，从上方链接下载并安装。</p>
+      <h3>2. 生成并导入配置</h3>
+      <p>在上方"配置生成器"中填入你的账户信息（或点击"从服务器获取"自动填入），生成 <code>config.yaml</code> 后复制或下载。</p>
+      <ul>
+        <li><strong>ClashX.Meta / Clash Verge Rev</strong>：打开客户端 → 配置 → 导入本地文件 → 选择下载的 <code>config.yaml</code></li>
+        <li><strong>mihomo 命令行</strong>：将 <code>config.yaml</code> 放入 <code>~/.config/mihomo/</code> 目录，执行 <code>mihomo -d ~/.config/mihomo</code></li>
+        <li><strong>Stash</strong>：配置文件 → 从 URL/本地导入 → 选择配置文件</li>
+      </ul>
+      <h3>3. 开始使用</h3>
+      <p>客户端启动后，本机 HTTP 代理默认监听 <code>127.0.0.1:7890</code>，SOCKS5 监听 <code>127.0.0.1:7891</code>。在浏览器或系统中设置代理即可。多数客户端支持"系统代理"一键打开。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ 帮助文档 ══════════════════════ -->
+<div class="section" id="sec-help">
+  <h2 style="font-size:1.4rem;margin-bottom:20px">📖 帮助文档</h2>
+  <div class="card">
+    <div class="card-body help-body" id="help-content">
+      <p style="color:#718096">加载中…</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ 自助申请 ══════════════════════ -->
+<div class="section" id="sec-self">
+  <h2 style="font-size:1.4rem;margin-bottom:8px">🔑 自助申请临时账户</h2>
+  <p style="color:#718096;font-size:14px;margin-bottom:20px">通过邮箱验证即可获得 2 小时免费临时代理账户，支持所有协议。到期后自动回收。</p>
+  <div id="self-container">
+    <p class="self-disabled">检查自助申请服务状态…</p>
+  </div>
+</div>
+
+</div>
+
+<div id="p-toast"></div>
+
+<script>
+const API = '';
+
+// ── 导航 ──
+function go(name, el) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.topnav nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('sec-' + name).classList.add('active');
+  if (el) el.classList.add('active');
+  window.scrollTo(0, 0);
+  if (name === 'help' && !helpLoaded) loadHelp();
+  if (name === 'self' && !selfLoaded) loadSelf();
+}
+
+// ── Toast ──
+function ptoast(msg, ok = true) {
+  const el = document.getElementById('p-toast');
+  el.textContent = msg;
+  el.style.background = ok ? '#276749' : '#822727';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ── VLESS fields toggle ──
+function toggleVless() {
+  document.getElementById('cg-vless-fields').style.display =
+    document.getElementById('cg-vless').checked ? '' : 'none';
+}
+
+// ── 从服务器获取共享端口信息 ──
+async function fillFromServer() {
+  try {
+    const r = await fetch(API + '/api/shared');
+    const d = await r.json();
+    if (d.server_ip) document.getElementById('cg-server').value = d.server_ip;
+    if (d.shared_socks_port) document.getElementById('cg-socks-port').value = d.shared_socks_port;
+    if (d.shared_http_port)  document.getElementById('cg-http-port').value = d.shared_http_port;
+    // try to get reality info
+    const r2 = await fetch(API + '/api/public/info');
+    const d2 = await r2.json();
+    if (d2.reality_enabled && d2.reality_port) {
+      document.getElementById('cg-vless').checked = true;
+      toggleVless();
+      document.getElementById('cg-vless-port').value = d2.reality_port;
+      if (d2.reality_sni)    document.getElementById('cg-vless-sni').value = d2.reality_sni;
+      if (d2.reality_pubkey) document.getElementById('cg-vless-pk').value = d2.reality_pubkey;
+      if (d2.reality_sid)    document.getElementById('cg-vless-sid').value = d2.reality_sid;
+    }
+    ptoast('已从服务器获取配置');
+  } catch (e) { ptoast('获取失败: ' + e.message, false); }
+}
+
+// ── 生成 mihomo config.yaml ──
+function generateConfig() {
+  const server    = document.getElementById('cg-server').value.trim();
+  const socksPort = document.getElementById('cg-socks-port').value.trim();
+  const httpPort  = document.getElementById('cg-http-port').value.trim();
+  const username  = document.getElementById('cg-username').value.trim();
+  const password  = document.getElementById('cg-password').value.trim();
+  if (!server || !username || !password) { ptoast('请填写服务器地址、用户名和密码', false); return; }
+  if (!socksPort && !httpPort) { ptoast('请至少填写一个代理端口', false); return; }
+
+  const proxies = [];
+  const proxyNames = [];
+
+  // VLESS
+  const useVless = document.getElementById('cg-vless').checked;
+  if (useVless) {
+    const vp   = document.getElementById('cg-vless-port').value.trim();
+    const uuid = document.getElementById('cg-vless-uuid').value.trim();
+    const sni  = document.getElementById('cg-vless-sni').value.trim() || 'www.microsoft.com';
+    const pk   = document.getElementById('cg-vless-pk').value.trim();
+    const sid  = document.getElementById('cg-vless-sid').value.trim();
+    if (vp && uuid && pk) {
+      proxyNames.push('vless-reality');
+      let p = '';
+      p += '  - name: "vless-reality"\n';
+      p += '    type: vless\n';
+      p += '    server: ' + server + '\n';
+      p += '    port: ' + vp + '\n';
+      p += '    uuid: ' + uuid + '\n';
+      p += '    flow: xtls-rprx-vision\n';
+      p += '    tls: true\n';
+      p += '    servername: ' + sni + '\n';
+      p += '    reality-opts:\n';
+      p += '      public-key: ' + pk + '\n';
+      if (sid) p += '      short-id: "' + sid + '"\n';
+      p += '    network: tcp';
+      proxies.push(p);
+    }
+  }
+
+  // SOCKS5
+  if (socksPort) {
+    proxyNames.push('socks5-proxy');
+    let p = '';
+    p += '  - name: "socks5-proxy"\n';
+    p += '    type: socks5\n';
+    p += '    server: ' + server + '\n';
+    p += '    port: ' + socksPort + '\n';
+    p += '    username: ' + username + '\n';
+    p += '    password: ' + password + '\n';
+    p += '    udp: true';
+    proxies.push(p);
+  }
+
+  // HTTP
+  if (httpPort) {
+    proxyNames.push('http-proxy');
+    let p = '';
+    p += '  - name: "http-proxy"\n';
+    p += '    type: http\n';
+    p += '    server: ' + server + '\n';
+    p += '    port: ' + httpPort + '\n';
+    p += '    username: ' + username + '\n';
+    p += '    password: ' + password;
+    proxies.push(p);
+  }
+
+  const namesList = proxyNames.map(n => '      - "' + n + '"').join('\n');
+
+  let yaml = '';
+  yaml += '# mihomo config.yaml — 由 SmartXray 配置生成器生成\n';
+  yaml += '# ' + new Date().toLocaleString('zh-CN') + '\n\n';
+  yaml += 'mixed-port: 7890\n';
+  yaml += 'allow-lan: false\n';
+  yaml += 'mode: rule\n';
+  yaml += 'log-level: info\n';
+  yaml += 'external-controller: 127.0.0.1:9090\n\n';
+  yaml += 'dns:\n';
+  yaml += '  enable: true\n';
+  yaml += '  listen: 0.0.0.0:1053\n';
+  yaml += '  enhanced-mode: fake-ip\n';
+  yaml += '  fake-ip-range: 198.18.0.1/16\n';
+  yaml += '  nameserver:\n';
+  yaml += '    - https://dns.alidns.com/dns-query\n';
+  yaml += '    - https://doh.pub/dns-query\n';
+  yaml += '  fallback:\n';
+  yaml += '    - https://1.1.1.1/dns-query\n';
+  yaml += '    - https://dns.google/dns-query\n\n';
+  yaml += 'proxies:\n';
+  yaml += proxies.join('\n') + '\n\n';
+  yaml += 'proxy-groups:\n';
+  yaml += '  - name: "Proxy"\n';
+  yaml += '    type: select\n';
+  yaml += '    proxies:\n';
+  yaml += namesList + '\n';
+  yaml += '      - DIRECT\n\n';
+  yaml += 'rules:\n';
+  yaml += '  - GEOIP,LAN,DIRECT\n';
+  yaml += '  - GEOIP,CN,DIRECT\n';
+  yaml += '  - MATCH,Proxy\n';
+
+  document.getElementById('cg-output').value = yaml;
+  document.getElementById('config-preview').style.display = '';
+  ptoast('配置已生成，可复制或下载');
+}
+
+function copyConfig() {
+  const text = document.getElementById('cg-output').value;
+  navigator.clipboard.writeText(text).then(() => ptoast('已复制到剪贴板'));
+}
+
+function downloadConfig() {
+  const text = document.getElementById('cg-output').value;
+  const blob = new Blob([text], { type: 'text/yaml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'config.yaml';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ── 帮助 ──
+let helpLoaded = false;
+async function loadHelp() {
+  try {
+    const r = await fetch(API + '/api/help');
+    const md = await r.text();
+    document.getElementById('help-content').innerHTML = renderMarkdown(md);
+    helpLoaded = true;
+  } catch (e) {
+    document.getElementById('help-content').innerHTML = '<p style="color:#fc8181">加载失败: ' + e.message + '</p>';
+  }
+}
+
+// ── 自助申请 ──
+let selfLoaded = false;
+async function loadSelf() {
+  const c = document.getElementById('self-container');
+  try {
+    const r = await fetch(API + '/self');
+    if (r.status === 403) {
+      c.innerHTML = '<div class="self-disabled"><p style="font-size:1.2rem;margin-bottom:8px">🔒 自助申请功能未开放</p><p>请联系管理员获取账户。</p></div>';
+      selfLoaded = true;
+      return;
+    }
+    const html = await r.text();
+    // extract body content and inject
+    const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    if (match) {
+      c.innerHTML = match[1];
+      // re-execute scripts
+      const scripts = c.querySelectorAll('script');
+      scripts.forEach(s => {
+        const ns = document.createElement('script');
+        ns.textContent = s.textContent;
+        s.parentNode.replaceChild(ns, s);
+      });
+    } else {
+      c.innerHTML = '<iframe src="/self" style="width:100%;border:none;border-radius:10px;min-height:650px;background:#1a1d27"></iframe>';
+    }
+    selfLoaded = true;
+  } catch (e) {
+    c.innerHTML = '<iframe src="/self" style="width:100%;border:none;border-radius:10px;min-height:650px;background:#1a1d27"></iframe>';
+    selfLoaded = true;
+  }
+}
+
+// ── Markdown 渲染器（精简版）──
+function renderMarkdown(md) {
+  const lines = md.split('\n');
+  let html = '', inCode = false, codeLines = [], inList = false, listType = '';
+  function fmt(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g,'<em>$1</em>')
+      .replace(/`([^`]+)`/g,'<code>$1</code>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
+  }
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      if (inCode) { html += '<pre><code>' + codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</code></pre>'; codeLines = []; inCode = false; }
+      else { if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; } inCode = true; }
+      continue;
+    }
+    if (inCode) { codeLines.push(line); continue; }
+    if (inList && !/^[-*\d]/.test(line.trim()) && line.trim()) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; }
+    if (line.startsWith('### ')) { html += '<h3>'+fmt(line.slice(4))+'</h3>'; continue; }
+    if (line.startsWith('## '))  { html += '<h2>'+fmt(line.slice(3))+'</h2>'; continue; }
+    if (line.startsWith('# '))   { html += '<h1>'+fmt(line.slice(2))+'</h1>'; continue; }
+    if (/^---+$/.test(line.trim())) { html += '<hr>'; continue; }
+    if (line.startsWith('> ')) { html += '<blockquote>'+fmt(line.slice(2))+'</blockquote>'; continue; }
+    if (/^[-*] /.test(line)) { if (!inList) { html+='<ul>'; inList=true; listType='ul'; } html+='<li>'+fmt(line.slice(2))+'</li>'; continue; }
+    const ol = line.match(/^(\d+)\. (.*)$/);
+    if (ol) { if (!inList) { html+='<ol>'; inList=true; listType='ol'; } html+='<li>'+fmt(ol[2])+'</li>'; continue; }
+    if (!line.trim()) continue;
+    html += '<p>'+fmt(line)+'</p>';
+  }
+  if (inList) html += listType==='ul'?'</ul>':'</ol>';
+  if (inCode) html += '<pre><code>'+codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</code></pre>';
+  return html;
+}
+
+// ── URL hash 导航 ──
+function initNav() {
+  const hash = location.hash.replace('#', '');
+  if (['home','download','help','self'].includes(hash)) {
+    go(hash, document.querySelector(`[onclick*="${hash}"]`));
+  }
+}
+initNav();
+</script>
+</body>
+</html>
