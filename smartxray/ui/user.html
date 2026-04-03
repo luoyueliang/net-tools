@@ -87,9 +87,10 @@ nav a .ico{width:18px;text-align:center}
 .dl-links{display:flex;gap:8px;flex-wrap:wrap}
 
 /* Help TOC floating nav */
-.help-toc-btn{position:fixed;bottom:24px;left:24px;width:44px;height:44px;border-radius:50%;background:#2b6cb0;color:#fff;border:none;font-size:20px;cursor:pointer;z-index:300;box-shadow:0 2px 8px rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;transition:background .2s}
+.help-toc-btn{position:fixed;width:36px;height:36px;border-radius:50%;background:#2b6cb0;color:#fff;border:none;font-size:17px;cursor:grab;z-index:300;box-shadow:0 2px 8px rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;transition:background .2s;user-select:none}
 .help-toc-btn:hover{background:#3182ce}
-.help-toc-panel{position:fixed;bottom:76px;left:24px;width:240px;max-height:60vh;background:#1a202c;border:1px solid #2d3748;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.5);z-index:300;overflow-y:auto;display:none;padding:10px 0}
+.help-toc-btn:active{cursor:grabbing}
+.help-toc-panel{position:fixed;width:240px;max-height:55vh;background:#1a202c;border:1px solid #2d3748;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.5);z-index:300;overflow-y:auto;display:none;padding:10px 0}
 .help-toc-panel.show{display:block}
 .help-toc-panel a{display:block;padding:5px 16px;color:#a0aec0;text-decoration:none;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s}
 .help-toc-panel a:hover{background:#2d3748;color:#e2e8f0}
@@ -154,7 +155,7 @@ nav a .ico{width:18px;text-align:center}
       <a data-page="proxies" onclick="showPage('proxies',this)"><span class="ico">🔗</span>代理链接</a>
       <a data-page="config" onclick="showPage('config',this)"><span class="ico">⚙</span>mihomo 配置</a>
       <a data-page="download" onclick="showPage('download',this)"><span class="ico">⬇</span>客户端下载</a>
-      <a data-page="help" onclick="showPage('help',this);loadHelp()"><span class="ico">❓</span>帮助文档</a>
+      <a id="nav-help" data-page="help" onclick="showPage('help',this);loadHelp()"><span class="ico">❓</span>帮助文档</a>
     </nav>
     <div style="padding:12px 16px;border-top:1px solid #2d3748">
       <div style="font-size:11px;color:#718096;margin-bottom:8px" id="nav-user"></div>
@@ -236,7 +237,7 @@ nav a .ico{width:18px;text-align:center}
       </div>
     </div>
     <div class="card" style="margin-top:20px">
-      <div class="card-header">服务端管理工具：mihomo-ctl</div>
+      <div class="card-header">极客专属：mihomo-ctl</div>
       <div class="card-body">
         <p style="font-size:13px;color:#a0aec0;margin-bottom:16px"><strong>mihomo-ctl</strong> 是我们自研的 Mihomo 多平台管理 CLI 工具，单文件 Node.js 脚本，支持启停/热重载/模式切换/流量监控/节点选择/GeoIP更新/无缝升级等。</p>
         <div class="dl-card"><div class="dl-icon">🛠️</div><div class="dl-info"><h3>mihomo-ctl — CLI 管理工具</h3><p>支持 macOS / Linux / FreeBSD / Alpine / OpenWrt / Windows，通过 install.js 一键安装。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/luoyueliang/net-tools/releases?q=mihomo-ctl" target="_blank">GitHub Releases</a><a class="btn btn-gray btn-sm" href="https://github.com/luoyueliang/net-tools/tree/main/mihomo" target="_blank">源码 & 文档</a></div></div></div>
@@ -252,7 +253,7 @@ nav a .ico{width:18px;text-align:center}
         <p style="color:#718096">加载中…</p>
       </div>
     </div>
-    <button class="help-toc-btn" id="help-toc-btn" onclick="toggleToc()" title="快速导航">☰</button>
+    <button class="help-toc-btn" id="help-toc-btn" title="快速导航">☰</button>
     <div class="help-toc-panel" id="help-toc-panel"></div>
   </div>
 
@@ -578,15 +579,54 @@ function buildToc() {
     html += '<a class="' + cls + '" href="#' + id + '" onclick="closeToc()">' + h.textContent + '</a>';
   });
   panel.innerHTML = html;
+  positionTocBtn();
   document.getElementById('help-toc-btn').style.display = 'flex';
 }
 
+function positionTocBtn() {
+  const navHelp = document.getElementById('nav-help');
+  const btn = document.getElementById('help-toc-btn');
+  if (!navHelp) return;
+  const r = navHelp.getBoundingClientRect();
+  btn.style.left = (r.left + r.width + 8) + 'px';
+  btn.style.top = (r.top + (r.height - 36) / 2) + 'px';
+}
+
 function toggleToc() {
-  document.getElementById('help-toc-panel').classList.toggle('show');
+  const panel = document.getElementById('help-toc-panel');
+  panel.classList.toggle('show');
+  if (panel.classList.contains('show')) {
+    const btn = document.getElementById('help-toc-btn');
+    const br = btn.getBoundingClientRect();
+    panel.style.left = br.left + 'px';
+    panel.style.top = (br.bottom + 6) + 'px';
+  }
 }
 function closeToc() {
   document.getElementById('help-toc-panel').classList.remove('show');
 }
+
+// Draggable TOC button
+(function() {
+  const btn = document.getElementById('help-toc-btn');
+  const panel = document.getElementById('help-toc-panel');
+  let dragging = false, ox, oy, moved;
+  btn.addEventListener('mousedown', function(e) { dragging = true; moved = false; ox = e.clientX - btn.getBoundingClientRect().left; oy = e.clientY - btn.getBoundingClientRect().top; e.preventDefault(); });
+  document.addEventListener('mousemove', function(e) {
+    if (!dragging) return; moved = true;
+    btn.style.left = (e.clientX - ox) + 'px'; btn.style.top = (e.clientY - oy) + 'px';
+    if (panel.classList.contains('show')) { panel.style.left = btn.style.left; panel.style.top = (btn.getBoundingClientRect().bottom + 6) + 'px'; }
+  });
+  document.addEventListener('mouseup', function() { if (dragging && !moved) toggleToc(); dragging = false; });
+  // Touch support
+  btn.addEventListener('touchstart', function(e) { dragging = true; moved = false; const t = e.touches[0]; ox = t.clientX - btn.getBoundingClientRect().left; oy = t.clientY - btn.getBoundingClientRect().top; }, {passive: true});
+  document.addEventListener('touchmove', function(e) {
+    if (!dragging) return; moved = true; const t = e.touches[0];
+    btn.style.left = (t.clientX - ox) + 'px'; btn.style.top = (t.clientY - oy) + 'px';
+    if (panel.classList.contains('show')) { panel.style.left = btn.style.left; panel.style.top = (btn.getBoundingClientRect().bottom + 6) + 'px'; }
+  }, {passive: true});
+  document.addEventListener('touchend', function() { if (dragging && !moved) toggleToc(); dragging = false; });
+})();
 
 function renderMarkdown(md) {
   const lines = md.split('\n');
