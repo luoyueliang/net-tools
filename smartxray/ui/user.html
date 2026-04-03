@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartXray — 我的代理</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+a{color:#63b3ed}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#1a1d27}
+::-webkit-scrollbar-thumb{background:#2d3748;border-radius:3px}
+
+/* Layout */
+.sidebar{position:fixed;top:0;left:0;width:200px;height:100vh;background:#1a1d27;border-right:1px solid #2d3748;display:flex;flex-direction:column}
+.logo{padding:20px 16px 16px;font-size:18px;font-weight:700;color:#63b3ed;border-bottom:1px solid #2d3748}
+.logo span{font-size:11px;font-weight:400;color:#718096;display:block;margin-top:2px}
+nav{flex:1;padding:8px 0;overflow-y:auto}
+nav a{display:flex;align-items:center;gap:8px;padding:10px 16px;color:#a0aec0;text-decoration:none;font-size:14px;cursor:pointer;transition:all .15s}
+nav a:hover,nav a.active{background:#2d3748;color:#fff}
+nav a .ico{width:18px;text-align:center}
+.main{margin-left:200px;padding:24px}
+.page{display:none}.page.active{display:block}
+
+/* Login */
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh}
+.login-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:36px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.login-card h1{font-size:1.3rem;color:#63b3ed;margin-bottom:6px}
+.login-card p.sub{font-size:.82rem;color:#718096;margin-bottom:24px}
+.login-card label{display:block;font-size:.8rem;color:#a0aec0;margin-bottom:4px}
+.login-card input{width:100%;padding:10px 14px;background:#131720;border:1px solid #2d3748;border-radius:8px;color:#e2e8f0;font-size:.95rem;outline:none;margin-bottom:16px}
+.login-card input:focus{border-color:#63b3ed}
+.login-card .err{color:#fc8181;font-size:.82rem;margin-top:10px;display:none}
+
+/* Status bar */
+.status-bar{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
+.stat-card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;padding:16px 20px;flex:1;min-width:150px}
+.stat-card .label{font-size:12px;color:#718096;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.stat-card .value{font-size:18px;font-weight:700}
+.stat-card .value.green{color:#68d391}
+.stat-card .value.red{color:#fc8181}
+.stat-card .value.blue{color:#63b3ed}
+.stat-card .value.orange{color:#ed8936}
+
+/* Card */
+.card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;overflow:hidden;margin-bottom:20px}
+.card-header{padding:14px 20px;border-bottom:1px solid #2d3748;font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px}
+.card-body{padding:20px}
+
+/* Proxy row */
+.proxy-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.proxy-row:last-child{margin-bottom:0}
+.proxy-label{font-size:12px;color:#718096;font-weight:600;text-transform:uppercase;letter-spacing:.5px;min-width:80px;flex-shrink:0}
+.proxy-url{flex:1;font-family:'SFMono-Regular',Consolas,monospace;font-size:13px;color:#e2e8f0;background:#131720;border:1px solid #2d3748;border-radius:6px;padding:8px 12px;word-break:break-all;min-width:0}
+.proxy-url.dimmed{color:#718096;font-style:italic}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:4px;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;transition:background .2s;text-decoration:none}
+.btn-primary{background:#3182ce;color:#fff}.btn-primary:hover{background:#2b6cb0}
+.btn-green{background:#276749;color:#fff}.btn-green:hover{background:#2f855a}
+.btn-gray{background:#2d3748;color:#e2e8f0}.btn-gray:hover{background:#4a5568}
+.btn-sm{padding:6px 12px;font-size:12px}
+.btn-copy{background:#2d3748;color:#a0aec0;padding:6px 10px;font-size:11px;flex-shrink:0}
+.btn-copy:hover{background:#4a5568;color:#fff}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.badge.green{background:#1a3a2a;color:#68d391}
+.badge.red{background:#3a1a1a;color:#fc8181}
+.badge.orange{background:#3a2a1a;color:#ed8936}
+
+/* Section title */
+.section-title{font-size:13px;color:#718096;font-weight:500;text-transform:uppercase;letter-spacing:.5px;margin:20px 0 12px;padding-bottom:8px;border-bottom:1px solid #2d3748}
+.section-title:first-child{margin-top:0}
+
+/* VLESS card */
+.vless-detail{font-size:13px;color:#a0aec0;line-height:1.8}
+.vless-detail .k{color:#718096;display:inline-block;min-width:90px}
+.vless-link{word-break:break-all;font-size:12px;color:#63b3ed;background:#131720;border:1px solid #2d3748;border-radius:6px;padding:10px 12px;margin-top:8px;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.5}
+
+/* Toast */
+#toast{position:fixed;bottom:24px;right:24px;background:#276749;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;z-index:200;pointer-events:none}
+#toast.show{opacity:1}
+
+/* Responsive */
+@media(max-width:768px){
+  .sidebar{display:none}
+  .main{margin-left:0}
+  .proxy-row{flex-direction:column;align-items:stretch}
+  .proxy-label{min-width:auto}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ Login View ═══ -->
+<div id="login-view" class="login-wrap">
+  <div class="login-card">
+    <h1>🔑 SmartXray</h1>
+    <p class="sub">使用代理账户登录查看您的代理信息</p>
+    <label>用户名</label>
+    <input type="text" id="login-user" placeholder="代理用户名" autofocus autocomplete="username">
+    <label>密码</label>
+    <input type="password" id="login-pass" placeholder="代理密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn btn-primary" style="width:100%;padding:10px" onclick="doLogin()">登录</button>
+    <p class="err" id="login-err"></p>
+  </div>
+</div>
+
+<!-- ═══ Dashboard View ═══ -->
+<div id="dash-view" style="display:none">
+  <aside class="sidebar">
+    <div class="logo">SmartXray<span>My Proxy</span></div>
+    <nav>
+      <a class="active" data-page="overview" onclick="showPage('overview',this)"><span class="ico">◉</span>概览</a>
+      <a data-page="proxies" onclick="showPage('proxies',this)"><span class="ico">🔗</span>代理链接</a>
+      <a data-page="config" onclick="showPage('config',this)"><span class="ico">⚙</span>mihomo 配置</a>
+    </nav>
+    <div style="padding:12px 16px;border-top:1px solid #2d3748">
+      <div style="font-size:11px;color:#718096;margin-bottom:8px" id="nav-user"></div>
+      <button class="btn btn-gray btn-sm" style="width:100%" onclick="doLogout()">🔒 退出</button>
+    </div>
+  </aside>
+
+  <main class="main">
+
+  <!-- ── 概览 ── -->
+  <div class="page active" id="page-overview">
+    <h2 style="font-size:1.2rem;margin-bottom:20px">📊 账户概览</h2>
+    <div class="status-bar">
+      <div class="stat-card"><div class="label">账户名</div><div class="value blue" id="s-name">—</div></div>
+      <div class="stat-card"><div class="label">状态</div><div class="value" id="s-status">—</div></div>
+      <div class="stat-card"><div class="label">到期时间</div><div class="value orange" id="s-expires" style="font-size:14px">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">🌐 快速连接</div>
+      <div class="card-body" id="quick-proxies">
+        <p style="color:#718096">加载中…</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 代理链接 ── -->
+  <div class="page" id="page-proxies">
+    <h2 style="font-size:1.2rem;margin-bottom:20px">🔗 代理链接</h2>
+
+    <div class="card">
+      <div class="card-header">📡 SOCKS5 代理</div>
+      <div class="card-body" id="socks-proxies">
+        <p style="color:#718096">加载中…</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">🌐 HTTP 代理</div>
+      <div class="card-body" id="http-proxies">
+        <p style="color:#718096">加载中…</p>
+      </div>
+    </div>
+
+    <div class="card" id="vless-card" style="display:none">
+      <div class="card-header">🛡️ VLESS + Reality</div>
+      <div class="card-body" id="vless-proxies"></div>
+    </div>
+  </div>
+
+  <!-- ── mihomo 配置 ── -->
+  <div class="page" id="page-config">
+    <h2 style="font-size:1.2rem;margin-bottom:20px">⚙ mihomo 配置生成</h2>
+    <div class="card">
+      <div class="card-header">📋 config.yaml</div>
+      <div class="card-body">
+        <p style="font-size:13px;color:#718096;margin-bottom:14px">根据您的代理账户自动生成完整的 mihomo 配置文件，复制或下载后直接使用。</p>
+        <textarea id="config-output" readonly style="width:100%;background:#0f1117;border:1px solid #2d3748;border-radius:8px;padding:14px;color:#a0aec0;font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;line-height:1.5;resize:vertical;min-height:300px"></textarea>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn btn-primary btn-sm" onclick="copyConfig()">📋 复制配置</button>
+          <button class="btn btn-green btn-sm" onclick="downloadConfig()">⬇ 下载 config.yaml</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+let userData = null;
+
+// ── Toast ──
+function toast(msg, ok = true) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = ok ? '#276749' : '#822727';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => toast('已复制到剪贴板')).catch(() => {
+    const el = document.createElement('textarea');
+    el.value = text; document.body.appendChild(el);
+    el.select(); document.execCommand('copy');
+    document.body.removeChild(el);
+    toast('已复制到剪贴板');
+  });
+}
+
+// ── Login ──
+async function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pass').value.trim();
+  if (!username || !password) return;
+  const errEl = document.getElementById('login-err');
+  errEl.style.display = 'none';
+  try {
+    const r = await fetch(API + '/api/user/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) { errEl.textContent = d.error || '登录失败'; errEl.style.display = 'block'; return; }
+    userData = d;
+    showDashboard();
+  } catch (e) { errEl.textContent = '网络错误: ' + e.message; errEl.style.display = 'block'; }
+}
+
+function doLogout() {
+  fetch(API + '/api/user/logout', { method: 'POST' });
+  userData = null;
+  document.getElementById('dash-view').style.display = 'none';
+  document.getElementById('login-view').style.display = 'flex';
+  document.getElementById('login-user').value = '';
+  document.getElementById('login-pass').value = '';
+}
+
+// ── Dashboard ──
+async function showDashboard() {
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('dash-view').style.display = '';
+  await loadMe();
+}
+
+async function loadMe() {
+  try {
+    const r = await fetch(API + '/api/user/me');
+    if (r.status === 401) { doLogout(); return; }
+    const d = await r.json();
+    userData = d;
+    renderOverview(d);
+    renderProxies(d);
+    renderConfig(d);
+  } catch (e) { toast('加载失败: ' + e.message, false); }
+}
+
+function renderOverview(d) {
+  document.getElementById('nav-user').textContent = '👤 ' + d.name;
+  document.getElementById('s-name').textContent = d.name;
+
+  const statusEl = document.getElementById('s-status');
+  if (d.enabled) {
+    statusEl.textContent = '✓ 正常';
+    statusEl.className = 'value green';
+  } else {
+    statusEl.textContent = '✗ 已禁用';
+    statusEl.className = 'value red';
+  }
+
+  const expiresEl = document.getElementById('s-expires');
+  if (d.expires_at) {
+    const exp = new Date(d.expires_at);
+    if (exp < new Date()) {
+      expiresEl.textContent = '已过期';
+      expiresEl.className = 'value red';
+    } else {
+      expiresEl.textContent = exp.toLocaleString('zh-CN', { hour12: false });
+    }
+  } else {
+    expiresEl.textContent = '永不过期';
+    expiresEl.className = 'value green';
+  }
+
+  // Quick proxies on overview
+  const qp = document.getElementById('quick-proxies');
+  let html = '';
+  if (d.proxies.socks5) html += proxyRow('SOCKS5', d.proxies.socks5);
+  if (d.proxies.http) html += proxyRow('HTTP', d.proxies.http);
+  if (d.proxies.vless_link) html += proxyRow('VLESS', d.proxies.vless_link);
+  qp.innerHTML = html || '<p style="color:#718096">无可用代理</p>';
+}
+
+function proxyRow(label, url) {
+  const id = 'pr-' + label.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + Math.random().toString(36).slice(2, 6);
+  return `<div class="proxy-row">
+    <span class="proxy-label">${label}</span>
+    <span class="proxy-url" id="${id}">${escHtml(url)}</span>
+    <button class="btn btn-copy" onclick="copyText(document.getElementById('${id}').textContent)">复制</button>
+  </div>`;
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderProxies(d) {
+  const p = d.proxies;
+
+  // SOCKS5
+  let socks = '';
+  if (p.socks5) socks += proxyRow('SOCKS5', p.socks5);
+  if (p.socks5h) socks += proxyRow('SOCKS5H', p.socks5h);
+  if (p.socks5_env) {
+    socks += '<div class="section-title">环境变量</div>';
+    socks += proxyRow('ALL_PROXY', p.socks5_env);
+  }
+  document.getElementById('socks-proxies').innerHTML = socks || '<p style="color:#718096">无 SOCKS5 代理</p>';
+
+  // HTTP
+  let http = '';
+  if (p.http) http += proxyRow('HTTP', p.http);
+  if (p.https) http += proxyRow('HTTPS', p.https);
+  if (p.http_env) {
+    http += '<div class="section-title">环境变量</div>';
+    http += proxyRow('http_proxy', p.http_env);
+    http += proxyRow('https_proxy', p.https_env || p.http_env);
+  }
+  document.getElementById('http-proxies').innerHTML = http || '<p style="color:#718096">无 HTTP 代理</p>';
+
+  // VLESS
+  if (p.vless_link) {
+    document.getElementById('vless-card').style.display = '';
+    let vhtml = '';
+    if (p.vless_detail) {
+      const v = p.vless_detail;
+      vhtml += '<div class="vless-detail">';
+      vhtml += `<div><span class="k">服务器</span>${escHtml(v.server)}</div>`;
+      vhtml += `<div><span class="k">端口</span>${v.port}</div>`;
+      vhtml += `<div><span class="k">UUID</span>${escHtml(v.uuid)} <button class="btn btn-copy" onclick="copyText('${escHtml(v.uuid)}')">复制</button></div>`;
+      vhtml += `<div><span class="k">Flow</span>xtls-rprx-vision</div>`;
+      vhtml += `<div><span class="k">SNI</span>${escHtml(v.sni)}</div>`;
+      vhtml += `<div><span class="k">Public Key</span><span style="font-size:12px">${escHtml(v.publicKey)}</span> <button class="btn btn-copy" onclick="copyText('${escHtml(v.publicKey)}')">复制</button></div>`;
+      if (v.shortId) vhtml += `<div><span class="k">Short ID</span>${escHtml(v.shortId)}</div>`;
+      vhtml += '</div>';
+    }
+    vhtml += '<div class="section-title">分享链接（可直接导入客户端）</div>';
+    const vlId = 'vless-link-' + Math.random().toString(36).slice(2, 6);
+    vhtml += `<div class="vless-link" id="${vlId}">${escHtml(p.vless_link)}</div>`;
+    vhtml += `<div style="margin-top:8px"><button class="btn btn-primary btn-sm" onclick="copyText(document.getElementById('${vlId}').textContent)">📋 复制链接</button></div>`;
+    document.getElementById('vless-proxies').innerHTML = vhtml;
+  }
+}
+
+function renderConfig(d) {
+  const p = d.proxies;
+  const server = d.server_ip || '127.0.0.1';
+
+  const proxies = [];
+  const proxyNames = [];
+
+  // VLESS first (recommended)
+  if (p.vless_detail) {
+    const v = p.vless_detail;
+    proxyNames.push('vless-reality');
+    let s = '';
+    s += '  - name: "vless-reality"\n';
+    s += '    type: vless\n';
+    s += '    server: ' + server + '\n';
+    s += '    port: ' + v.port + '\n';
+    s += '    uuid: ' + v.uuid + '\n';
+    s += '    flow: xtls-rprx-vision\n';
+    s += '    tls: true\n';
+    s += '    servername: ' + v.sni + '\n';
+    s += '    reality-opts:\n';
+    s += '      public-key: ' + v.publicKey + '\n';
+    if (v.shortId) s += '      short-id: "' + v.shortId + '"\n';
+    s += '    network: tcp';
+    proxies.push(s);
+  }
+
+  // SOCKS5
+  if (d.socks_port) {
+    proxyNames.push('socks5-proxy');
+    let s = '';
+    s += '  - name: "socks5-proxy"\n';
+    s += '    type: socks5\n';
+    s += '    server: ' + server + '\n';
+    s += '    port: ' + d.socks_port + '\n';
+    s += '    username: ' + d.username + '\n';
+    s += '    password: ' + d.password + '\n';
+    s += '    udp: true';
+    proxies.push(s);
+  }
+
+  // HTTP
+  if (d.http_port) {
+    proxyNames.push('http-proxy');
+    let s = '';
+    s += '  - name: "http-proxy"\n';
+    s += '    type: http\n';
+    s += '    server: ' + server + '\n';
+    s += '    port: ' + d.http_port + '\n';
+    s += '    username: ' + d.username + '\n';
+    s += '    password: ' + d.password;
+    proxies.push(s);
+  }
+
+  if (!proxies.length) {
+    document.getElementById('config-output').value = '# 无可用代理配置';
+    return;
+  }
+
+  const namesList = proxyNames.map(n => '      - "' + n + '"').join('\n');
+
+  let yaml = '';
+  yaml += '# mihomo config.yaml — SmartXray 用户面板生成\n';
+  yaml += '# 用户: ' + d.name + ' | ' + new Date().toLocaleString('zh-CN') + '\n\n';
+  yaml += 'mixed-port: 7890\n';
+  yaml += 'allow-lan: false\n';
+  yaml += 'mode: rule\n';
+  yaml += 'log-level: info\n';
+  yaml += 'external-controller: 127.0.0.1:9090\n\n';
+  yaml += 'dns:\n';
+  yaml += '  enable: true\n';
+  yaml += '  listen: 0.0.0.0:1053\n';
+  yaml += '  enhanced-mode: fake-ip\n';
+  yaml += '  fake-ip-range: 198.18.0.1/16\n';
+  yaml += '  nameserver:\n';
+  yaml += '    - https://dns.alidns.com/dns-query\n';
+  yaml += '    - https://doh.pub/dns-query\n';
+  yaml += '  fallback:\n';
+  yaml += '    - https://1.1.1.1/dns-query\n';
+  yaml += '    - https://dns.google/dns-query\n\n';
+  yaml += 'proxies:\n';
+  yaml += proxies.join('\n') + '\n\n';
+  yaml += 'proxy-groups:\n';
+  yaml += '  - name: "Proxy"\n';
+  yaml += '    type: select\n';
+  yaml += '    proxies:\n';
+  yaml += namesList + '\n';
+  yaml += '      - DIRECT\n\n';
+  yaml += 'rules:\n';
+  yaml += '  - GEOIP,LAN,DIRECT\n';
+  yaml += '  - GEOIP,CN,DIRECT\n';
+  yaml += '  - MATCH,Proxy\n';
+
+  document.getElementById('config-output').value = yaml;
+}
+
+function copyConfig() {
+  const text = document.getElementById('config-output').value;
+  if (text) copyText(text);
+}
+
+function downloadConfig() {
+  const text = document.getElementById('config-output').value;
+  if (!text) return;
+  const blob = new Blob([text], { type: 'text/yaml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'config.yaml';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ── Page nav ──
+function showPage(name, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  if (el) el.classList.add('active');
+}
+
+// ── Auto login via cookie ──
+async function checkSession() {
+  try {
+    const r = await fetch(API + '/api/user/me');
+    if (r.ok) {
+      const d = await r.json();
+      userData = d;
+      showDashboard();
+      return;
+    }
+  } catch {}
+  // show login
+  document.getElementById('login-view').style.display = 'flex';
+}
+
+checkSession();
+</script>
+</body>
+</html>

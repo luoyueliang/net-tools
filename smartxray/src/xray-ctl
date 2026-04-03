@@ -33,7 +33,7 @@ const DEF_SS_SOCKS_MAX    = 14999;
 const DEF_SS_HTTP_MIN     = 18000;
 const DEF_SS_HTTP_MAX     = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.4.5';
+const VERSION       = '2.4.6';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -1346,6 +1346,7 @@ function startApiServer() {
   const uiFile     = path.join(uiDir, 'index.html');
   const selfFile   = path.join(uiDir, 'self-service.html');
   const portalFile = path.join(uiDir, 'portal.html');
+  const userFile   = path.join(uiDir, 'user.html');
 
   // ── 认证辅助 ────────────────────────────────────────────────
   function parseCookies(str) {
@@ -1367,6 +1368,19 @@ function startApiServer() {
     const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
     if (auth === token || auth === adminPwd) return true;
     return false;
+  }
+  function makeUserToken(username, password) {
+    return crypto.createHash('sha256').update(`smartxray-user:${username}:${password}`).digest('hex').slice(0, 32);
+  }
+  function getUserFromToken(req) {
+    const cookies = parseCookies(req.headers.cookie);
+    const token = cookies._sxutoken;
+    if (!token) return null;
+    const users = db().prepare('SELECT * FROM users WHERE enabled=1').all();
+    for (const u of users) {
+      if (makeUserToken(u.username, u.password) === token) return u;
+    }
+    return null;
   }
 
   const LOGIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SmartXray Login</title>
@@ -1428,6 +1442,17 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
       res.writeHead(404); res.end('UI not found. Run install first.'); return;
     }
 
+    // 静态 UI — 用户面板（/my，用户自行登录）
+    if (url === '/my' || url === '/my/') {
+      if (fs.existsSync(userFile)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(fs.readFileSync(userFile, 'utf8'));
+      } else {
+        res.writeHead(404); res.end('user.html not installed. Run install first.');
+      }
+      return;
+    }
+
     // 静态 UI — 自助申请页面（/self，无需管理密码）
     if (url === '/self' || url === '/self/') {
       if (getSetting('selfservice_enabled') !== '1') {
@@ -1448,6 +1473,86 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
     req.on('end', async () => {
       let json = {};
       try { if (body) json = JSON.parse(body); } catch {}
+
+      // POST /api/user/login — 用户登录（用代理账户名密码）
+      if (method === 'POST' && url === '/api/user/login') {
+        const { username: uname, password: upwd } = json;
+        if (!uname || !upwd) return apiResponse(res, 400, { error: '请输入用户名和密码' });
+        const user = db().prepare('SELECT * FROM users WHERE username=? AND password=? AND enabled=1').get(uname, upwd);
+        if (!user) return apiResponse(res, 401, { error: '用户名或密码错误' });
+        const utoken = makeUserToken(uname, upwd);
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `_sxutoken=${utoken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`,
+          'Access-Control-Allow-Origin': '*',
+        });
+        return res.end(JSON.stringify({ ok: true, name: user.name }));
+      }
+
+      // POST /api/user/logout — 用户退出
+      if (method === 'POST' && url === '/api/user/logout') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': '_sxutoken=; Path=/; HttpOnly; Max-Age=0',
+          'Access-Control-Allow-Origin': '*',
+        });
+        return res.end(JSON.stringify({ ok: true }));
+      }
+
+      // GET /api/user/me — 获取当前用户代理信息
+      if (method === 'GET' && url === '/api/user/me') {
+        const user = getUserFromToken(req);
+        if (!user) return apiResponse(res, 401, { error: '未登录' });
+        const serverIp = getSetting('server_ip', '');
+        const reality  = getRealityConfig();
+        const sharedSocks = parseInt(getSetting('shared_socks_port', '0')) || 0;
+        const sharedHttp  = parseInt(getSetting('shared_http_port', '0'))  || 0;
+        const socksPort = sharedSocks || user.port;
+        const httpPort  = sharedHttp  || user.http_port;
+        const proxies = {};
+        // SOCKS5
+        if (socksPort) {
+          proxies.socks5  = `socks5://${encodeURIComponent(user.username)}:${encodeURIComponent(user.password)}@${serverIp}:${socksPort}`;
+          proxies.socks5h = `socks5h://${encodeURIComponent(user.username)}:${encodeURIComponent(user.password)}@${serverIp}:${socksPort}`;
+          proxies.socks5_env = proxies.socks5;
+        }
+        // HTTP
+        if (httpPort) {
+          proxies.http  = `http://${encodeURIComponent(user.username)}:${encodeURIComponent(user.password)}@${serverIp}:${httpPort}`;
+          proxies.https = `http://${encodeURIComponent(user.username)}:${encodeURIComponent(user.password)}@${serverIp}:${httpPort}`;
+          proxies.http_env  = proxies.http;
+          proxies.https_env = proxies.http;
+        }
+        // VLESS
+        if (reality.enabled && reality.publicKey && user.uuid) {
+          const vlessLink =
+            `vless://${user.uuid}@${serverIp}:${reality.port}` +
+            `?type=tcp&security=reality` +
+            `&sni=${encodeURIComponent(reality.serverNames[0] || '')}` +
+            `&pbk=${encodeURIComponent(reality.publicKey)}` +
+            `&sid=${encodeURIComponent(reality.shortIds[0] || '')}` +
+            `&flow=xtls-rprx-vision#xray-${user.name}`;
+          proxies.vless_link = vlessLink;
+          proxies.vless_detail = {
+            server: serverIp, port: reality.port, uuid: user.uuid,
+            sni: reality.serverNames[0] || '',
+            publicKey: reality.publicKey,
+            shortId: reality.shortIds[0] || '',
+          };
+        }
+        return apiResponse(res, 200, {
+          name: user.name,
+          username: user.username,
+          password: user.password,
+          enabled: !!user.enabled,
+          expires_at: user.expires_at,
+          created_at: user.created_at,
+          socks_port: socksPort,
+          http_port: httpPort,
+          server_ip: serverIp,
+          proxies,
+        });
+      }
 
       // POST /api/login — 登录认证（无需已认证）
       if (method === 'POST' && url === '/api/login') {
