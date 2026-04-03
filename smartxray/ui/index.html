@@ -205,8 +205,12 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
     <div class="card-header">服务器设置</div>
     <div class="form-grid">
       <div class="form-group">
-        <label>server_ip（对外 IP，用于 mihomo 配置）</label>
-        <input id="cfg-server_ip" placeholder="如：1.2.3.4 或 0.0.0.0">
+        <label>server_ip（服务端内网 IP）</label>
+        <input id="cfg-server_ip" placeholder="如：192.168.0.3 或 0.0.0.0">
+      </div>
+      <div class="form-group">
+        <label>public_host（对外主机名/域名，空 = 同 server_ip）</label>
+        <input id="cfg-public_host" placeholder="如：home.example.com">
       </div>
       <div class="form-group">
         <label>log_level</label>
@@ -379,8 +383,12 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
       <div class="card-header">下游入站配置（Inbound）</div>
       <div class="form-grid">
         <div class="form-group">
-          <label>server_ip（公布给客户端的服务器 IP）</label>
-          <input id="ceditor-server-ip" placeholder="1.2.3.4">
+          <label>server_ip（服务端内网 IP）</label>
+          <input id="ceditor-server-ip" placeholder="192.168.0.3">
+        </div>
+        <div class="form-group">
+          <label>public_host（对外主机名/域名，空 = 同 server_ip）</label>
+          <input id="ceditor-public-host" placeholder="home.example.com">
         </div>
         <div class="form-group">
           <label>log_level</label>
@@ -632,13 +640,15 @@ function copyExport() {
 async function loadSettings() {
   const d = await apiFetch('GET', '/api/settings');
   document.getElementById('cfg-server_ip').value = d.server_ip || '';
+  document.getElementById('cfg-public_host').value = d.public_host || '';
   document.getElementById('cfg-log_level').value  = d.log_level || 'warning';
 }
 
 async function saveSettings() {
   const r = await apiFetch('POST', '/api/settings', {
-    server_ip:  document.getElementById('cfg-server_ip').value.trim(),
-    log_level:  document.getElementById('cfg-log_level').value,
+    server_ip:    document.getElementById('cfg-server_ip').value.trim(),
+    public_host:  document.getElementById('cfg-public_host').value.trim(),
+    log_level:    document.getElementById('cfg-log_level').value,
   });
   if (r.error) { toast('保存失败: ' + r.error, false); return; }
   toast('设置已保存并重载');
@@ -759,6 +769,7 @@ function switchCfgTab(tab) {
 async function loadFormConfig() {
   const d = await apiFetch('GET', '/api/settings');
   document.getElementById('ceditor-server-ip').value   = d.server_ip || '';
+  document.getElementById('ceditor-public-host').value  = d.public_host || '';
   document.getElementById('ceditor-log-level').value   = d.log_level || 'warning';
   document.getElementById('ceditor-upstream').value    = d.upstream_outbounds || '';
   document.getElementById('ceditor-use-upstream').checked = !!d.use_upstream;
@@ -777,6 +788,7 @@ async function saveFormConfig() {
   }
   const r = await apiFetch('POST', '/api/settings', {
     server_ip:          document.getElementById('ceditor-server-ip').value.trim(),
+    public_host:        document.getElementById('ceditor-public-host').value.trim(),
     log_level:          document.getElementById('ceditor-log-level').value,
     upstream_outbounds: upstream,
     use_upstream:       document.getElementById('ceditor-use-upstream').checked,

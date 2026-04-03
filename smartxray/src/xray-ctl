@@ -33,7 +33,7 @@ const DEF_SS_SOCKS_MAX    = 14999;
 const DEF_SS_HTTP_MIN     = 18000;
 const DEF_SS_HTTP_MAX     = 19999;
 const BIN           = '/usr/local/bin/xray';
-const VERSION       = '2.4.6';
+const VERSION       = '2.4.7';
 const GITHUB_REPO   = 'luoyueliang/net-tools';
 const PLIST         = `${HOME}/Library/LaunchAgents/com.smartxray.plist`;
 const PLIST_DISABLED = `${PLIST}.disabled`;
@@ -491,7 +491,7 @@ function exportMihomoProxies() {
   const users   = db().prepare('SELECT * FROM users WHERE enabled=1 ORDER BY port').all();
   const reality = getRealityConfig();
   if (!users.length) { fs.writeFileSync(MIHOMO_OUT, '# no proxies\n'); return; }
-  const ip    = getSetting('server_ip', '127.0.0.1');
+  const ip    = getSetting('public_host', '') || getSetting('server_ip', '127.0.0.1');
   const sharedSocksPort = parseInt(getSetting('shared_socks_port', '0')) || 0;
   const sharedHttpPort  = parseInt(getSetting('shared_http_port', '0'))  || 0;
   const lines = ['proxies:'];
@@ -1127,7 +1127,7 @@ function cleanupExpired() {
 // ─── 命令：config ────────────────────────────────────────────
 function cmdConfig(args) {
   const key = args[0], val = args[1];
-  const validKeys = ['server_ip', 'log_level', 'merge_inbounds', 'use_upstream', 'shared_socks_port', 'shared_http_port', 'admin_password'];
+  const validKeys = ['server_ip', 'public_host', 'log_level', 'merge_inbounds', 'use_upstream', 'shared_socks_port', 'shared_http_port', 'admin_password'];
 
   if (!key) {
     console.log(c.bold('\n── 设置 ──────────────────────────────────────'));
@@ -1140,7 +1140,8 @@ function cmdConfig(args) {
       }
     }
     console.log(c.dim('\n  修改: xray-ctl config <key> <value>'));
-    console.log(c.dim('  server_ip:         xray 监听 IP（发布到客户端 / mihomo 配置）'));
+    console.log(c.dim('  server_ip:         xray 监听 IP（服务端内网地址）'));
+    console.log(c.dim('  public_host:       对外主机名/IP（客户端链接用，空=同 server_ip）'));
     console.log(c.dim('  log_level:         debug|info|warning|error|none'));
     console.log(c.dim('  merge_inbounds:    1=仅替换 inbounds，保留现有 outbounds/routing/balancers'));
     console.log(c.dim('  use_upstream:      1=启用上游出站转发'));
@@ -1503,7 +1504,7 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
       if (method === 'GET' && url === '/api/user/me') {
         const user = getUserFromToken(req);
         if (!user) return apiResponse(res, 401, { error: '未登录' });
-        const serverIp = getSetting('server_ip', '');
+        const serverIp = getSetting('public_host', '') || getSetting('server_ip', '');
         const reality  = getRealityConfig();
         const sharedSocks = parseInt(getSetting('shared_socks_port', '0')) || 0;
         const sharedHttp  = parseInt(getSetting('shared_http_port', '0'))  || 0;
@@ -1745,7 +1746,7 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
           cmdReload();
         } catch (e) { return apiResponse(res, 500, { error: '账户创建失败: ' + e.message }); }
 
-        const serverIp = getSetting('server_ip', '');
+        const serverIp = getSetting('public_host', '') || getSetting('server_ip', '');
         const reality  = getRealityConfig();
         const ssSharedSocks = parseInt(getSetting('shared_socks_port', '0')) || 0;
         const ssSharedHttp  = parseInt(getSetting('shared_http_port', '0'))  || 0;
@@ -1848,6 +1849,7 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
       if (method === 'GET' && url === '/api/settings') {
         return apiResponse(res, 200, {
           server_ip:          getSetting('server_ip', ''),
+          public_host:        getSetting('public_host', ''),
           log_level:          getSetting('log_level', 'warning'),
           upstream_outbounds: getSetting('upstream_outbounds', ''),
           use_upstream:       getSetting('use_upstream', '0') === '1',
@@ -1857,6 +1859,7 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
       // POST /api/settings
       if (method === 'POST' && url === '/api/settings') {
         if (json.server_ip   !== undefined) setSetting('server_ip', json.server_ip);
+        if (json.public_host !== undefined) setSetting('public_host', json.public_host);
         if (json.log_level   !== undefined) setSetting('log_level', json.log_level);
         if (json.use_upstream !== undefined) setSetting('use_upstream', json.use_upstream ? '1' : '0');
         if (json.upstream_outbounds !== undefined) {
@@ -1904,7 +1907,7 @@ const d=await r.json();if(d.ok){location.reload()}else{const e=document.getEleme
         return apiResponse(res, 200, {
           shared_socks_port: parseInt(getSetting('shared_socks_port', '0')) || 0,
           shared_http_port:  parseInt(getSetting('shared_http_port', '0'))  || 0,
-          server_ip: getSetting('server_ip', ''),
+          server_ip: getSetting('public_host', '') || getSetting('server_ip', ''),
         });
       }
 
@@ -2094,7 +2097,8 @@ ${c.bold('自助申请 (email 验证 → 临时账户)')}
 
 ${c.bold('配置')}
   xray-ctl config                       查看所有设置
-  xray-ctl config server_ip <IP>        对外 IP
+  xray-ctl config server_ip <IP>        服务端内网 IP
+  xray-ctl config public_host <域名|IP>  对外主机名(空=同 server_ip)
   xray-ctl config log_level <级别>      debug|info|warning|error|none
   xray-ctl config shared_socks_port <端口>  共享 SOCKS5 端口（0=禁用，多用户共用）
   xray-ctl config shared_http_port  <端口>  共享 HTTP 端口（0=禁用，多用户共用）
