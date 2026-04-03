@@ -79,6 +79,33 @@ nav a .ico{width:18px;text-align:center}
 .vless-detail .k{color:#718096;display:inline-block;min-width:90px}
 .vless-link{word-break:break-all;font-size:12px;color:#63b3ed;background:#131720;border:1px solid #2d3748;border-radius:6px;padding:10px 12px;margin-top:8px;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.5}
 
+/* Download cards */
+.dl-card{background:#1a1d27;border:1px solid #2d3748;border-radius:10px;padding:20px;display:flex;gap:16px;margin-bottom:14px;align-items:flex-start}
+.dl-icon{font-size:36px;flex-shrink:0}
+.dl-info h3{font-size:15px;color:#e2e8f0;margin-bottom:4px}
+.dl-info p{font-size:13px;color:#718096;line-height:1.5;margin-bottom:8px}
+.dl-links{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Help markdown rendering */
+.help-body h1{font-size:1.6em;font-weight:700;color:#63b3ed;margin:24px 0 12px;padding-bottom:6px;border-bottom:1px solid #2d3748}
+.help-body h2{font-size:1.3em;font-weight:600;color:#e2e8f0;margin:20px 0 10px}
+.help-body h3{font-size:1.1em;font-weight:600;color:#a0aec0;margin:16px 0 8px}
+.help-body p{margin:8px 0;color:#cbd5e0;font-size:14px;line-height:1.7}
+.help-body strong{color:#e2e8f0}
+.help-body em{color:#a0aec0;font-style:italic}
+.help-body code{background:#171923;padding:1px 6px;border-radius:4px;font-family:'SFMono-Regular',Consolas,monospace;font-size:.88em;color:#68d391}
+.help-body pre{background:#171923;border:1px solid #2d3748;border-radius:8px;padding:14px 16px;overflow-x:auto;margin:10px 0;line-height:1.6}
+.help-body pre code{background:none;padding:0;color:#a0aec0;font-size:12px}
+.help-body blockquote{border-left:3px solid #4a90d9;padding:8px 14px;margin:10px 0;background:#171923;border-radius:0 6px 6px 0;color:#90cdf4;font-size:.92em}
+.help-body ul,.help-body ol{margin:8px 0 8px 20px;color:#cbd5e0}
+.help-body li{margin:4px 0}
+.help-body hr{border:none;border-top:1px solid #2d3748;margin:20px 0}
+.help-body table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+.help-body th{padding:8px 12px;text-align:left;background:#171923;color:#718096;border:1px solid #2d3748;font-weight:500}
+.help-body td{padding:8px 12px;border:1px solid #2d3748;color:#cbd5e0}
+.help-body a{color:#63b3ed;text-decoration:none}
+.help-body a:hover{text-decoration:underline}
+
 /* Toast */
 #toast{position:fixed;bottom:24px;right:24px;background:#276749;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;z-index:200;pointer-events:none}
 #toast.show{opacity:1}
@@ -116,6 +143,8 @@ nav a .ico{width:18px;text-align:center}
       <a class="active" data-page="overview" onclick="showPage('overview',this)"><span class="ico">◉</span>概览</a>
       <a data-page="proxies" onclick="showPage('proxies',this)"><span class="ico">🔗</span>代理链接</a>
       <a data-page="config" onclick="showPage('config',this)"><span class="ico">⚙</span>mihomo 配置</a>
+      <a data-page="download" onclick="showPage('download',this)"><span class="ico">⬇</span>客户端下载</a>
+      <a data-page="help" onclick="showPage('help',this);loadHelp()"><span class="ico">❓</span>帮助文档</a>
     </nav>
     <div style="padding:12px 16px;border-top:1px solid #2d3748">
       <div style="font-size:11px;color:#718096;margin-bottom:8px" id="nav-user"></div>
@@ -178,6 +207,32 @@ nav a .ico{width:18px;text-align:center}
           <button class="btn btn-primary btn-sm" onclick="copyConfig()">📋 复制配置</button>
           <button class="btn btn-green btn-sm" onclick="downloadConfig()">⬇ 下载 config.yaml</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 客户端下载 ── -->
+  <div class="page" id="page-download">
+    <h2 style="font-size:1.2rem;margin-bottom:20px">⬇ 客户端下载</h2>
+    <div class="card">
+      <div class="card-header">推荐客户端：mihomo（原 Clash.Meta）</div>
+      <div class="card-body">
+        <p style="font-size:13px;color:#a0aec0;margin-bottom:16px"><strong>mihomo</strong> 是高性能规则代理内核，支持 SOCKS5/HTTP/VLESS+Reality 等多种协议。配合图形化管理面板使用，是目前最强大的代理客户端方案。</p>
+        <div class="dl-card"><div class="dl-icon">🍎</div><div class="dl-info"><h3>macOS — ClashX.Meta</h3><p>基于 mihomo 内核的 macOS 原生客户端，菜单栏快速切换。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/MetaCubeX/ClashX.Meta/releases/latest" target="_blank">GitHub 下载</a></div></div></div>
+        <div class="dl-card"><div class="dl-icon">🪟</div><div class="dl-info"><h3>Windows — Clash Verge Rev</h3><p>美观易用的 Windows/macOS/Linux 跨平台客户端，内置 mihomo 内核。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank">GitHub 下载</a></div></div></div>
+        <div class="dl-card"><div class="dl-icon">🐧</div><div class="dl-info"><h3>Linux — Clash Verge Rev / mihomo TUI</h3><p>桌面用户推荐 Clash Verge Rev；服务器用户可直接使用 mihomo 内核命令行。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank">Clash Verge Rev</a><a class="btn btn-gray btn-sm" href="https://github.com/MetaCubeX/mihomo/releases/latest" target="_blank">mihomo 内核</a></div></div></div>
+        <div class="dl-card"><div class="dl-icon">📱</div><div class="dl-info"><h3>Android — ClashMeta for Android</h3><p>Android 专属 mihomo 客户端。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/MetaCubeX/ClashMetaForAndroid/releases/latest" target="_blank">GitHub 下载</a></div></div></div>
+        <div class="dl-card"><div class="dl-icon">🍏</div><div class="dl-info"><h3>iOS — Stash / Shadowrocket</h3><p>Stash 原生支持 mihomo 配置；Shadowrocket 支持 VLESS+Reality。均需 App Store (非中国区) 购买。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://apps.apple.com/app/stash/id1596063349" target="_blank">Stash</a><a class="btn btn-gray btn-sm" href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank">Shadowrocket</a></div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 帮助文档 ── -->
+  <div class="page" id="page-help">
+    <h2 style="font-size:1.2rem;margin-bottom:20px">❓ 帮助文档</h2>
+    <div class="card">
+      <div class="card-body help-body" id="help-content">
+        <p style="color:#718096">加载中…</p>
       </div>
     </div>
   </div>
@@ -470,6 +525,54 @@ function showPage(name, el) {
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   if (el) el.classList.add('active');
+}
+
+// ── Help ──
+let helpLoaded = false;
+async function loadHelp() {
+  if (helpLoaded) return;
+  try {
+    const r = await fetch(API + '/api/help');
+    const md = await r.text();
+    document.getElementById('help-content').innerHTML = renderMarkdown(md);
+    helpLoaded = true;
+  } catch (e) {
+    document.getElementById('help-content').innerHTML = '<p style="color:#fc8181">加载失败: ' + e.message + '</p>';
+  }
+}
+
+function renderMarkdown(md) {
+  const lines = md.split('\n');
+  let html = '', inCode = false, codeLines = [], inList = false, listType = '';
+  function fmt(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g,'<em>$1</em>')
+      .replace(/`([^`]+)`/g,'<code>$1</code>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
+  }
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      if (inCode) { html += '<pre><code>' + codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</code></pre>'; codeLines = []; inCode = false; }
+      else { if (inList) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; } inCode = true; }
+      continue;
+    }
+    if (inCode) { codeLines.push(line); continue; }
+    if (inList && !/^[-*\d]/.test(line.trim()) && line.trim()) { html += listType==='ul'?'</ul>':'</ol>'; inList=false; }
+    if (line.startsWith('### ')) { html += '<h3>'+fmt(line.slice(4))+'</h3>'; continue; }
+    if (line.startsWith('## '))  { html += '<h2>'+fmt(line.slice(3))+'</h2>'; continue; }
+    if (line.startsWith('# '))   { html += '<h1>'+fmt(line.slice(2))+'</h1>'; continue; }
+    if (/^---+$/.test(line.trim())) { html += '<hr>'; continue; }
+    if (line.startsWith('> ')) { html += '<blockquote>'+fmt(line.slice(2))+'</blockquote>'; continue; }
+    if (/^[-*] /.test(line)) { if (!inList) { html+='<ul>'; inList=true; listType='ul'; } html+='<li>'+fmt(line.slice(2))+'</li>'; continue; }
+    const ol = line.match(/^(\d+)\. (.*)$/);
+    if (ol) { if (!inList) { html+='<ol>'; inList=true; listType='ol'; } html+='<li>'+fmt(ol[2])+'</li>'; continue; }
+    if (!line.trim()) continue;
+    html += '<p>'+fmt(line)+'</p>';
+  }
+  if (inList) html += listType==='ul'?'</ul>':'</ol>';
+  if (inCode) html += '<pre><code>'+codeLines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</code></pre>';
+  return html;
 }
 
 // ── Auto login via cookie ──

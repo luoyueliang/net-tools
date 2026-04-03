@@ -228,6 +228,178 @@ ssh -o ProxyCommand='nc -x 服务器IP:SOCKS端口 -X 5 %h %p' user@target-host
 
 ---
 
+## 常见应用代理配置
+
+许多开发工具和应用程序**不走系统代理**，需要单独配置。
+
+### npm / yarn / pnpm
+
+```bash
+# npm — 设置 HTTP 代理
+npm config set proxy http://用户名:密码@服务器IP:HTTP端口
+npm config set https-proxy http://用户名:密码@服务器IP:HTTP端口
+
+# 取消代理
+npm config delete proxy
+npm config delete https-proxy
+
+# yarn
+yarn config set httpProxy http://用户名:密码@服务器IP:HTTP端口
+yarn config set httpsProxy http://用户名:密码@服务器IP:HTTP端口
+
+# pnpm（同 npm）
+pnpm config set proxy http://用户名:密码@服务器IP:HTTP端口
+pnpm config set https-proxy http://用户名:密码@服务器IP:HTTP端口
+```
+
+### pip (Python)
+
+```bash
+# 临时使用
+pip install --proxy http://用户名:密码@服务器IP:HTTP端口 包名
+
+# 永久配置 — 创建 ~/.config/pip/pip.conf（Linux/macOS）
+[global]
+proxy = http://用户名:密码@服务器IP:HTTP端口
+```
+
+### Go
+
+```bash
+export GOPROXY="https://proxy.golang.org,direct"
+export HTTP_PROXY="http://用户名:密码@服务器IP:HTTP端口"
+export HTTPS_PROXY="http://用户名:密码@服务器IP:HTTP端口"
+```
+
+### Telegram
+
+Telegram 桌面版和移动版均需手动配置代理：
+
+**桌面版（macOS / Windows / Linux）：**
+
+1. 打开 Telegram → **设置** → **高级** → **代理设置** → **添加代理**
+2. 选择 **SOCKS5**
+3. **服务器**填入服务器 IP
+4. **端口**填入 SOCKS5 端口
+5. **用户名**和**密码**填入您的账户信息
+6. 保存并启用
+
+**移动版（iOS / Android）：**
+
+1. **设置** → **数据和存储** → **代理设置** → **添加代理**
+2. 类型选择 **SOCKS5**
+3. 填入服务器 IP、SOCKS5 端口、用户名、密码
+
+> Telegram 不支持 HTTP 代理认证，请使用 SOCKS5。
+
+### Spotify
+
+Spotify 桌面版：
+
+1. **设置** → 滚动到底部 → **显示高级设置**
+2. **代理** → 代理类型选择 **SOCKS5**
+3. 填入服务器 IP、SOCKS5 端口、用户名、密码
+4. 重启 Spotify
+
+### Steam
+
+1. 在 Steam 启动参数中添加：
+```bash
+# 或使用命令行启动
+steam -tcp -http_proxy http://用户名:密码@服务器IP:HTTP端口
+```
+
+2. 或通过系统环境变量设置（Linux/macOS）：
+```bash
+export HTTP_PROXY="http://用户名:密码@服务器IP:HTTP端口"
+export HTTPS_PROXY="http://用户名:密码@服务器IP:HTTP端口"
+steam
+```
+
+### Homebrew (macOS)
+
+Homebrew 读取环境变量，在终端中设置即可：
+
+```bash
+export ALL_PROXY=socks5h://用户名:密码@服务器IP:SOCKS端口
+brew update && brew upgrade
+```
+
+### Docker
+
+```bash
+# 方法 1：~/.docker/config.json
+{
+  "proxies": {
+    "default": {
+      "httpProxy": "http://用户名:密码@服务器IP:HTTP端口",
+      "httpsProxy": "http://用户名:密码@服务器IP:HTTP端口",
+      "noProxy": "localhost,127.0.0.1"
+    }
+  }
+}
+
+# 方法 2：daemon 级别 — /etc/docker/daemon.json 或 systemd override
+# 创建 /etc/systemd/system/docker.service.d/proxy.conf：
+[Service]
+Environment="HTTP_PROXY=http://用户名:密码@服务器IP:HTTP端口"
+Environment="HTTPS_PROXY=http://用户名:密码@服务器IP:HTTP端口"
+# 然后 systemctl daemon-reload && systemctl restart docker
+```
+
+### VS Code
+
+1. **设置**（Ctrl+,）→ 搜索 `proxy`
+2. **Http: Proxy** 填入 `http://用户名:密码@服务器IP:HTTP端口`
+3. 如需终端也走代理，勾选 **Http: Proxy Support** 为 `override`
+
+或在 `settings.json` 中添加：
+
+```json
+{
+  "http.proxy": "http://用户名:密码@服务器IP:HTTP端口",
+  "http.proxyStrictSSL": false
+}
+```
+
+### Gradle (Android Studio / Java)
+
+```properties
+# 在 ~/.gradle/gradle.properties 中添加：
+systemProp.http.proxyHost=服务器IP
+systemProp.http.proxyPort=HTTP端口
+systemProp.http.proxyUser=用户名
+systemProp.http.proxyPassword=密码
+systemProp.https.proxyHost=服务器IP
+systemProp.https.proxyPort=HTTP端口
+systemProp.https.proxyUser=用户名
+systemProp.https.proxyPassword=密码
+```
+
+### 通用方案：proxychains（Linux/macOS）
+
+对于完全不支持代理设置的应用，可使用 `proxychains` 强制走代理：
+
+```bash
+# 安装 (macOS)
+brew install proxychains-ng
+
+# 安装 (Linux)
+apt install proxychains4
+
+# 配置 /etc/proxychains.conf 或 ~/.proxychains/proxychains.conf：
+# 在最后一行添加：
+socks5  服务器IP  SOCKS端口  用户名  密码
+
+# 使用
+proxychains4 任意命令
+# 例如：
+proxychains4 curl https://www.google.com
+proxychains4 npm install
+```
+
+---
+
 ## 常见问题
 
 **Q: HTTP 代理和 SOCKS5 代理有什么区别？**
