@@ -86,6 +86,16 @@ nav a .ico{width:18px;text-align:center}
 .dl-info p{font-size:13px;color:#718096;line-height:1.5;margin-bottom:8px}
 .dl-links{display:flex;gap:8px;flex-wrap:wrap}
 
+/* Help TOC floating nav */
+.help-toc-btn{position:fixed;bottom:24px;left:24px;width:44px;height:44px;border-radius:50%;background:#2b6cb0;color:#fff;border:none;font-size:20px;cursor:pointer;z-index:300;box-shadow:0 2px 8px rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;transition:background .2s}
+.help-toc-btn:hover{background:#3182ce}
+.help-toc-panel{position:fixed;bottom:76px;left:24px;width:240px;max-height:60vh;background:#1a202c;border:1px solid #2d3748;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.5);z-index:300;overflow-y:auto;display:none;padding:10px 0}
+.help-toc-panel.show{display:block}
+.help-toc-panel a{display:block;padding:5px 16px;color:#a0aec0;text-decoration:none;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s}
+.help-toc-panel a:hover{background:#2d3748;color:#e2e8f0}
+.help-toc-panel a.toc-h2{padding-left:16px;color:#e2e8f0;font-weight:600}
+.help-toc-panel a.toc-h3{padding-left:30px;font-size:12px}
+
 /* Help markdown rendering */
 .help-body h1{font-size:1.6em;font-weight:700;color:#63b3ed;margin:24px 0 12px;padding-bottom:6px;border-bottom:1px solid #2d3748}
 .help-body h2{font-size:1.3em;font-weight:600;color:#e2e8f0;margin:20px 0 10px}
@@ -225,6 +235,13 @@ nav a .ico{width:18px;text-align:center}
         <div class="dl-card"><div class="dl-icon">🍏</div><div class="dl-info"><h3>iOS — Stash / Shadowrocket</h3><p>Stash 原生支持 mihomo 配置；Shadowrocket 支持 VLESS+Reality。均需 App Store (非中国区) 购买。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://apps.apple.com/app/stash/id1596063349" target="_blank">Stash</a><a class="btn btn-gray btn-sm" href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank">Shadowrocket</a></div></div></div>
       </div>
     </div>
+    <div class="card" style="margin-top:20px">
+      <div class="card-header">服务端管理工具：mihomo-ctl</div>
+      <div class="card-body">
+        <p style="font-size:13px;color:#a0aec0;margin-bottom:16px"><strong>mihomo-ctl</strong> 是我们自研的 Mihomo 多平台管理 CLI 工具，单文件 Node.js 脚本，支持启停/热重载/模式切换/流量监控/节点选择/GeoIP更新/无缝升级等。</p>
+        <div class="dl-card"><div class="dl-icon">🛠️</div><div class="dl-info"><h3>mihomo-ctl — CLI 管理工具</h3><p>支持 macOS / Linux / FreeBSD / Alpine / OpenWrt / Windows，通过 install.js 一键安装。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/luoyueliang/net-tools/releases?q=mihomo-ctl" target="_blank">GitHub Releases</a><a class="btn btn-gray btn-sm" href="https://github.com/luoyueliang/net-tools/tree/main/mihomo" target="_blank">源码 & 文档</a></div></div></div>
+      </div>
+    </div>
   </div>
 
   <!-- ── 帮助文档 ── -->
@@ -235,6 +252,8 @@ nav a .ico{width:18px;text-align:center}
         <p style="color:#718096">加载中…</p>
       </div>
     </div>
+    <button class="help-toc-btn" id="help-toc-btn" onclick="toggleToc()" title="快速导航">☰</button>
+    <div class="help-toc-panel" id="help-toc-panel"></div>
   </div>
 
   </main>
@@ -525,6 +544,11 @@ function showPage(name, el) {
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   if (el) el.classList.add('active');
+  // Toggle help TOC button visibility
+  const tocBtn = document.getElementById('help-toc-btn');
+  const tocPanel = document.getElementById('help-toc-panel');
+  if (name === 'help' && helpLoaded) { tocBtn.style.display = 'flex'; }
+  else { tocBtn.style.display = 'none'; tocPanel.classList.remove('show'); }
 }
 
 // ── Help ──
@@ -535,10 +559,33 @@ async function loadHelp() {
     const r = await fetch(API + '/api/help');
     const md = await r.text();
     document.getElementById('help-content').innerHTML = renderMarkdown(md);
+    buildToc();
     helpLoaded = true;
   } catch (e) {
     document.getElementById('help-content').innerHTML = '<p style="color:#fc8181">加载失败: ' + e.message + '</p>';
   }
+}
+
+function buildToc() {
+  const container = document.getElementById('help-content');
+  const panel = document.getElementById('help-toc-panel');
+  const headings = container.querySelectorAll('h2, h3');
+  let html = '';
+  headings.forEach((h, i) => {
+    const id = 'help-s-' + i;
+    h.id = id;
+    const cls = h.tagName === 'H2' ? 'toc-h2' : 'toc-h3';
+    html += '<a class="' + cls + '" href="#' + id + '" onclick="closeToc()">' + h.textContent + '</a>';
+  });
+  panel.innerHTML = html;
+  document.getElementById('help-toc-btn').style.display = 'flex';
+}
+
+function toggleToc() {
+  document.getElementById('help-toc-panel').classList.toggle('show');
+}
+function closeToc() {
+  document.getElementById('help-toc-panel').classList.remove('show');
 }
 
 function renderMarkdown(md) {
