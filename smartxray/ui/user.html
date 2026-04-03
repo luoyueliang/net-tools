@@ -86,6 +86,18 @@ nav a .ico{width:18px;text-align:center}
 .dl-info p{font-size:13px;color:#718096;line-height:1.5;margin-bottom:8px}
 .dl-links{display:flex;gap:8px;flex-wrap:wrap}
 
+/* Config gen */
+.config-gen{background:#131720;border:1px solid #2d3748;border-radius:10px;padding:20px;margin-top:16px}
+.config-gen h3{font-size:15px;color:#63b3ed;margin-bottom:4px}
+.config-gen>p{font-size:12px;color:#718096;margin-bottom:14px}
+.form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.form-row label{font-size:12px;color:#a0aec0;display:flex;flex-direction:column;gap:4px;flex:1;min-width:140px}
+.form-row input,.form-row select{background:#0f1117;border:1px solid #2d3748;border-radius:6px;padding:8px 10px;color:#e2e8f0;font-size:13px;outline:none}
+.form-row input:focus,.form-row select:focus{border-color:#63b3ed}
+.config-preview{position:relative}
+.config-preview textarea{width:100%;background:#0f1117;border:1px solid #2d3748;border-radius:8px;padding:14px;color:#a0aec0;font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;line-height:1.5;resize:vertical;min-height:200px}
+.config-actions{display:flex;gap:8px;margin-top:10px}
+
 /* Help TOC floating nav */
 .help-toc-btn{position:fixed;width:36px;height:36px;border-radius:50%;background:#2b6cb0;color:#fff;border:none;font-size:17px;cursor:grab;z-index:300;box-shadow:0 2px 8px rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;transition:background .2s;user-select:none}
 .help-toc-btn:hover{background:#3182ce}
@@ -153,7 +165,6 @@ nav a .ico{width:18px;text-align:center}
     <nav>
       <a class="active" data-page="overview" onclick="showPage('overview',this)"><span class="ico">◉</span>概览</a>
       <a data-page="proxies" onclick="showPage('proxies',this)"><span class="ico">🔗</span>代理链接</a>
-      <a data-page="config" onclick="showPage('config',this)"><span class="ico">⚙</span>mihomo 配置</a>
       <a data-page="download" onclick="showPage('download',this)"><span class="ico">⬇</span>客户端下载</a>
       <a id="nav-help" data-page="help" onclick="showPage('help',this);loadHelp()"><span class="ico">❓</span>帮助文档</a>
     </nav>
@@ -206,41 +217,112 @@ nav a .ico{width:18px;text-align:center}
     </div>
   </div>
 
-  <!-- ── mihomo 配置 ── -->
-  <div class="page" id="page-config">
-    <h2 style="font-size:1.2rem;margin-bottom:20px">⚙ mihomo 配置生成</h2>
-    <div class="card">
-      <div class="card-header">📋 config.yaml</div>
-      <div class="card-body">
-        <p style="font-size:13px;color:#718096;margin-bottom:14px">根据您的代理账户自动生成完整的 mihomo 配置文件，复制或下载后直接使用。</p>
-        <textarea id="config-output" readonly style="width:100%;background:#0f1117;border:1px solid #2d3748;border-radius:8px;padding:14px;color:#a0aec0;font-family:'SFMono-Regular',Consolas,monospace;font-size:12px;line-height:1.5;resize:vertical;min-height:300px"></textarea>
-        <div style="display:flex;gap:8px;margin-top:12px">
-          <button class="btn btn-primary btn-sm" onclick="copyConfig()">📋 复制配置</button>
-          <button class="btn btn-green btn-sm" onclick="downloadConfig()">⬇ 下载 config.yaml</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- ── 客户端下载 ── -->
   <div class="page" id="page-download">
     <h2 style="font-size:1.2rem;margin-bottom:20px">⬇ 客户端下载</h2>
+
     <div class="card">
       <div class="card-header">推荐客户端：mihomo（原 Clash.Meta）</div>
       <div class="card-body">
-        <p style="font-size:13px;color:#a0aec0;margin-bottom:16px"><strong>mihomo</strong> 是高性能规则代理内核，支持 SOCKS5/HTTP/VLESS+Reality 等多种协议。配合图形化管理面板使用，是目前最强大的代理客户端方案。</p>
+        <p style="font-size:13px;color:#a0aec0;margin-bottom:16px"><strong>mihomo</strong> 是一个高性能的规则代理内核，支持 SOCKS5/HTTP/VLESS+Reality 等多种协议，配合图形化管理面板使用，是目前最强大的代理客户端方案。</p>
+        <h3 style="font-size:14px;color:#e2e8f0;margin-bottom:12px">📱 图形化客户端（推荐）</h3>
         <div class="dl-card"><div class="dl-icon">🍎</div><div class="dl-info"><h3>macOS — ClashX.Meta</h3><p>基于 mihomo 内核的 macOS 原生客户端，菜单栏快速切换。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/MetaCubeX/ClashX.Meta/releases/latest" target="_blank">GitHub 下载</a></div></div></div>
         <div class="dl-card"><div class="dl-icon">🪟</div><div class="dl-info"><h3>Windows — Clash Verge Rev</h3><p>美观易用的 Windows/macOS/Linux 跨平台客户端，内置 mihomo 内核。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank">GitHub 下载</a></div></div></div>
         <div class="dl-card"><div class="dl-icon">🐧</div><div class="dl-info"><h3>Linux — Clash Verge Rev / mihomo TUI</h3><p>桌面用户推荐 Clash Verge Rev；服务器用户可直接使用 mihomo 内核命令行。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/clash-verge-rev/clash-verge-rev/releases/latest" target="_blank">Clash Verge Rev</a><a class="btn btn-gray btn-sm" href="https://github.com/MetaCubeX/mihomo/releases/latest" target="_blank">mihomo 内核</a></div></div></div>
         <div class="dl-card"><div class="dl-icon">📱</div><div class="dl-info"><h3>Android — ClashMeta for Android</h3><p>Android 专属 mihomo 客户端。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/MetaCubeX/ClashMetaForAndroid/releases/latest" target="_blank">GitHub 下载</a></div></div></div>
-        <div class="dl-card"><div class="dl-icon">🍏</div><div class="dl-info"><h3>iOS — Stash / Shadowrocket</h3><p>Stash 原生支持 mihomo 配置；Shadowrocket 支持 VLESS+Reality。均需 App Store (非中国区) 购买。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://apps.apple.com/app/stash/id1596063349" target="_blank">Stash</a><a class="btn btn-gray btn-sm" href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank">Shadowrocket</a></div></div></div>
+        <div class="dl-card"><div class="dl-icon">🍏</div><div class="dl-info"><h3>iOS — Stash / Shadowrocket</h3><p>Stash 原生支持 mihomo 配置格式；Shadowrocket 支持 VLESS+Reality。均需在 App Store (非中国区) 购买。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://apps.apple.com/app/stash/id1596063349" target="_blank">Stash</a><a class="btn btn-gray btn-sm" href="https://apps.apple.com/app/shadowrocket/id932747118" target="_blank">Shadowrocket</a></div></div></div>
       </div>
     </div>
+
     <div class="card" style="margin-top:20px">
       <div class="card-header">极客专属：mihomo-ctl</div>
       <div class="card-body">
         <p style="font-size:13px;color:#a0aec0;margin-bottom:16px"><strong>mihomo-ctl</strong> 是我们自研的 Mihomo 多平台管理 CLI 工具，单文件 Node.js 脚本，支持启停/热重载/模式切换/流量监控/节点选择/GeoIP更新/无缝升级等。</p>
         <div class="dl-card"><div class="dl-icon">🛠️</div><div class="dl-info"><h3>mihomo-ctl — CLI 管理工具</h3><p>支持 macOS / Linux / FreeBSD / Alpine / OpenWrt / Windows，通过 install.js 一键安装。</p><div class="dl-links"><a class="btn btn-primary btn-sm" href="https://github.com/luoyueliang/net-tools/releases?q=mihomo-ctl" target="_blank">GitHub Releases</a><a class="btn btn-gray btn-sm" href="https://github.com/luoyueliang/net-tools/tree/main/mihomo" target="_blank">源码 & 文档</a></div></div></div>
+      </div>
+    </div>
+
+    <!-- mihomo 配置生成器 -->
+    <div class="config-gen" id="config-gen">
+      <h3>🔧 mihomo 配置生成器</h3>
+      <p>输入你的代理账户信息，自动生成可用的 mihomo <code>config.yaml</code> 完整配置文件。</p>
+      <div class="form-row">
+        <label>服务器地址
+          <input id="cg-server" placeholder="如 1.2.3.4 或 home.example.com">
+        </label>
+      </div>
+      <div class="form-row">
+        <label>SOCKS5 端口
+          <input id="cg-socks-port" type="number" placeholder="13350">
+        </label>
+        <label>HTTP 端口
+          <input id="cg-http-port" type="number" placeholder="17890">
+        </label>
+      </div>
+      <div class="form-row">
+        <label>用户名
+          <input id="cg-username" placeholder="代理用户名">
+        </label>
+        <label>密码
+          <input id="cg-password" placeholder="代理密码">
+        </label>
+      </div>
+      <div class="form-row">
+        <label>
+          <span style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="cg-vless" onchange="toggleVless()"> 启用 VLESS+Reality（如果有）
+          </span>
+        </label>
+      </div>
+      <div id="cg-vless-fields" style="display:none">
+        <div class="form-row">
+          <label>VLESS 端口
+            <input id="cg-vless-port" type="number" placeholder="8443">
+          </label>
+          <label>UUID
+            <input id="cg-vless-uuid" placeholder="xxxxxxxx-xxxx-...">
+          </label>
+        </div>
+        <div class="form-row">
+          <label>SNI
+            <input id="cg-vless-sni" placeholder="www.microsoft.com">
+          </label>
+          <label>Public Key
+            <input id="cg-vless-pk" placeholder="Reality public key">
+          </label>
+        </div>
+        <div class="form-row">
+          <label>Short ID（可留空）
+            <input id="cg-vless-sid" placeholder="">
+          </label>
+        </div>
+      </div>
+      <div class="config-actions" style="margin-bottom:12px">
+        <button class="btn btn-primary" onclick="generateConfig()">⚙ 生成配置</button>
+      </div>
+      <div class="config-preview" id="config-preview" style="display:none">
+        <textarea id="cg-output" readonly></textarea>
+        <div class="config-actions">
+          <button class="btn btn-primary btn-sm" onclick="copyConfig()">📋 复制配置</button>
+          <button class="btn btn-green btn-sm" onclick="downloadConfig()">⬇ 下载 config.yaml</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <div class="card-header">📖 客户端使用说明</div>
+      <div class="card-body">
+        <h3>1. 下载并安装客户端</h3>
+        <p>选择适合你操作系统的客户端，从上方链接下载并安装。</p>
+        <h3>2. 生成并导入配置</h3>
+        <p>在上方“配置生成器”中填入你的账户信息，生成 <code>config.yaml</code> 后复制或下载。</p>
+        <ul>
+          <li><strong>ClashX.Meta / Clash Verge Rev</strong>：打开客户端 → 配置 → 导入本地文件 → 选择下载的 <code>config.yaml</code></li>
+          <li><strong>mihomo 命令行</strong>：将 <code>config.yaml</code> 放入 <code>~/.config/mihomo/</code> 目录，执行 <code>mihomo -d ~/.config/mihomo</code></li>
+          <li><strong>Stash</strong>：配置文件 → 从 URL/本地导入 → 选择配置文件</li>
+        </ul>
+        <h3>3. 开始使用</h3>
+        <p>客户端启动后，本机 HTTP 代理默认监听 <code>127.0.0.1:7890</code>，SOCKS5 监听 <code>127.0.0.1:7891</code>。在浏览器或系统中设置代理即可。多数客户端支持“系统代理”一键打开。</p>
       </div>
     </div>
   </div>
@@ -428,69 +510,104 @@ function renderProxies(d) {
 }
 
 function renderConfig(d) {
-  const p = d.proxies;
-  const server = d.server_ip || '127.0.0.1';
+  // Auto-fill config generator fields
+  if (d.server_ip) document.getElementById('cg-server').value = d.server_ip;
+  if (d.socks_port) document.getElementById('cg-socks-port').value = d.socks_port;
+  if (d.http_port) document.getElementById('cg-http-port').value = d.http_port;
+  if (d.username) document.getElementById('cg-username').value = d.username;
+  if (d.password) document.getElementById('cg-password').value = d.password;
+  // VLESS
+  const v = d.proxies && d.proxies.vless_detail;
+  if (v) {
+    document.getElementById('cg-vless').checked = true;
+    toggleVless();
+    document.getElementById('cg-vless-port').value = v.port;
+    document.getElementById('cg-vless-uuid').value = v.uuid;
+    if (v.sni) document.getElementById('cg-vless-sni').value = v.sni;
+    if (v.publicKey) document.getElementById('cg-vless-pk').value = v.publicKey;
+    if (v.shortId) document.getElementById('cg-vless-sid').value = v.shortId;
+  }
+  // Auto-generate
+  generateConfig();
+}
+
+function toggleVless() {
+  document.getElementById('cg-vless-fields').style.display =
+    document.getElementById('cg-vless').checked ? '' : 'none';
+}
+
+function generateConfig() {
+  const server    = document.getElementById('cg-server').value.trim();
+  const socksPort = document.getElementById('cg-socks-port').value.trim();
+  const httpPort  = document.getElementById('cg-http-port').value.trim();
+  const username  = document.getElementById('cg-username').value.trim();
+  const password  = document.getElementById('cg-password').value.trim();
+  if (!server || !username || !password) { toast('请填写服务器地址、用户名和密码', false); return; }
+  if (!socksPort && !httpPort) { toast('请至少填写一个代理端口', false); return; }
 
   const proxies = [];
   const proxyNames = [];
 
-  // VLESS first (recommended)
-  if (p.vless_detail) {
-    const v = p.vless_detail;
-    proxyNames.push('vless-reality');
-    let s = '';
-    s += '  - name: "vless-reality"\n';
-    s += '    type: vless\n';
-    s += '    server: ' + server + '\n';
-    s += '    port: ' + v.port + '\n';
-    s += '    uuid: ' + v.uuid + '\n';
-    s += '    flow: xtls-rprx-vision\n';
-    s += '    tls: true\n';
-    s += '    servername: ' + v.sni + '\n';
-    s += '    reality-opts:\n';
-    s += '      public-key: ' + v.publicKey + '\n';
-    if (v.shortId) s += '      short-id: "' + v.shortId + '"\n';
-    s += '    network: tcp';
-    proxies.push(s);
+  // VLESS
+  const useVless = document.getElementById('cg-vless').checked;
+  if (useVless) {
+    const vp   = document.getElementById('cg-vless-port').value.trim();
+    const uuid = document.getElementById('cg-vless-uuid').value.trim();
+    const sni  = document.getElementById('cg-vless-sni').value.trim() || 'www.microsoft.com';
+    const pk   = document.getElementById('cg-vless-pk').value.trim();
+    const sid  = document.getElementById('cg-vless-sid').value.trim();
+    if (vp && uuid && pk) {
+      proxyNames.push('vless-reality');
+      let p = '';
+      p += '  - name: "vless-reality"\n';
+      p += '    type: vless\n';
+      p += '    server: ' + server + '\n';
+      p += '    port: ' + vp + '\n';
+      p += '    uuid: ' + uuid + '\n';
+      p += '    flow: xtls-rprx-vision\n';
+      p += '    tls: true\n';
+      p += '    servername: ' + sni + '\n';
+      p += '    reality-opts:\n';
+      p += '      public-key: ' + pk + '\n';
+      if (sid) p += '      short-id: "' + sid + '"\n';
+      p += '    network: tcp';
+      proxies.push(p);
+    }
   }
 
   // SOCKS5
-  if (d.socks_port) {
+  if (socksPort) {
     proxyNames.push('socks5-proxy');
-    let s = '';
-    s += '  - name: "socks5-proxy"\n';
-    s += '    type: socks5\n';
-    s += '    server: ' + server + '\n';
-    s += '    port: ' + d.socks_port + '\n';
-    s += '    username: ' + d.username + '\n';
-    s += '    password: ' + d.password + '\n';
-    s += '    udp: true';
-    proxies.push(s);
+    let p = '';
+    p += '  - name: "socks5-proxy"\n';
+    p += '    type: socks5\n';
+    p += '    server: ' + server + '\n';
+    p += '    port: ' + socksPort + '\n';
+    p += '    username: ' + username + '\n';
+    p += '    password: ' + password + '\n';
+    p += '    udp: true';
+    proxies.push(p);
   }
 
   // HTTP
-  if (d.http_port) {
+  if (httpPort) {
     proxyNames.push('http-proxy');
-    let s = '';
-    s += '  - name: "http-proxy"\n';
-    s += '    type: http\n';
-    s += '    server: ' + server + '\n';
-    s += '    port: ' + d.http_port + '\n';
-    s += '    username: ' + d.username + '\n';
-    s += '    password: ' + d.password;
-    proxies.push(s);
-  }
-
-  if (!proxies.length) {
-    document.getElementById('config-output').value = '# 无可用代理配置';
-    return;
+    let p = '';
+    p += '  - name: "http-proxy"\n';
+    p += '    type: http\n';
+    p += '    server: ' + server + '\n';
+    p += '    port: ' + httpPort + '\n';
+    p += '    username: ' + username + '\n';
+    p += '    password: ' + password;
+    proxies.push(p);
   }
 
   const namesList = proxyNames.map(n => '      - "' + n + '"').join('\n');
+  const uname = userData ? userData.name : username;
 
   let yaml = '';
   yaml += '# mihomo config.yaml — SmartXray 用户面板生成\n';
-  yaml += '# 用户: ' + d.name + ' | ' + new Date().toLocaleString('zh-CN') + '\n\n';
+  yaml += '# 用户: ' + uname + ' | ' + new Date().toLocaleString('zh-CN') + '\n\n';
   yaml += 'mixed-port: 7890\n';
   yaml += 'allow-lan: false\n';
   yaml += 'mode: rule\n';
@@ -520,16 +637,17 @@ function renderConfig(d) {
   yaml += '  - GEOIP,CN,DIRECT\n';
   yaml += '  - MATCH,Proxy\n';
 
-  document.getElementById('config-output').value = yaml;
+  document.getElementById('cg-output').value = yaml;
+  document.getElementById('config-preview').style.display = '';
 }
 
 function copyConfig() {
-  const text = document.getElementById('config-output').value;
+  const text = document.getElementById('cg-output').value;
   if (text) copyText(text);
 }
 
 function downloadConfig() {
-  const text = document.getElementById('config-output').value;
+  const text = document.getElementById('cg-output').value;
   if (!text) return;
   const blob = new Blob([text], { type: 'text/yaml' });
   const a = document.createElement('a');
