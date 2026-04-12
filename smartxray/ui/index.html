@@ -209,7 +209,7 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
         <input id="cfg-server_ip" placeholder="如：192.168.0.3 或 0.0.0.0">
       </div>
       <div class="form-group">
-        <label>public_host（对外主机名/域名，空 = 同 server_ip）</label>
+        <label>public_host <span style="cursor:help;color:#63b3ed" title="对外主机名或域名，留空则使用 server_ip">ⓘ</span></label>
         <input id="cfg-public_host" placeholder="如：home.example.com">
       </div>
       <div class="form-group">
@@ -309,7 +309,7 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
           <input id="fw-openwrt-key" placeholder="~/.ssh/id_rsa">
         </div>
         <div class="form-group">
-          <label>本机内网 IP（DNAT 目标，如 192.168.0.32）</label>
+          <label>本机内网 IP <span style="color:#718096;font-size:11px">（DNAT 目标）</span></label>
           <input id="fw-openwrt-dest" placeholder="192.168.0.32">
         </div>
       </div>
@@ -387,7 +387,7 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
           <input id="ceditor-server-ip" placeholder="192.168.0.3">
         </div>
         <div class="form-group">
-          <label>public_host（对外主机名/域名，空 = 同 server_ip）</label>
+          <label>public_host <span style="cursor:help;color:#63b3ed" title="对外主机名或域名，留空则使用 server_ip">ⓘ</span></label>
           <input id="ceditor-public-host" placeholder="home.example.com">
         </div>
         <div class="form-group">
@@ -488,6 +488,11 @@ code{font-family:'SFMono-Regular',Consolas,monospace}
 </div>
 
 <div id="toast"></div>
+
+<!-- 版本信息 -->
+<div style="position:fixed;bottom:8px;left:216px;font-size:11px;color:#4a5568;z-index:50">
+  SmartXray v3.0.0
+</div>
 
 <script>
 const API = '';  // same origin

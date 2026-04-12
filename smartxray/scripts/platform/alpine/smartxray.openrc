@@ -5,7 +5,7 @@
 name="smartxray"
 description="SmartXray - Xray Server Manager"
 command="/usr/local/bin/xray-ctl"
-command_args="start"
+command_args="ui"
 command_user="__USER__"
 command_background=true
 pidfile="/run/smartxray-node.pid"
@@ -20,4 +20,6 @@ depend() {
 start_pre() {
     mkdir -p /home/__USER__/.config/smartxray/logs
     checkpath -d -m 0755 -o __USER__ /home/__USER__/.config/smartxray
+    # 先启动 Xray 二进制（start 命令会立即返回）
+    /usr/local/bin/xray-ctl start 2>&1 | tail -1
 }

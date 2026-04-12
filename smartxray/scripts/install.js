@@ -26,6 +26,21 @@ function run(cmd, opts = {}) {
   return (execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }) ?? '').trim();
 }
 
+// 检测是否需要 sudo
+function needsSudo() {
+  try {
+    const currentUser = run('whoami');
+    return currentUser !== 'root';
+  } catch {
+    return true;
+  }
+}
+
+// 获取 sudo 前缀
+function sudoPrefix() {
+  return needsSudo() ? 'sudo ' : '';
+}
+
 // ── Proxy setup ──────────────────────────────────────────────────
 async function promptProxy() {
   const existing = process.env.HTTPS_PROXY || process.env.https_proxy ||
@@ -141,7 +156,7 @@ async function installXray() {
   const tmpBin = path.join(tmpDir, 'xray');
   if (!fs.existsSync(tmpBin)) error('Decompress failed: xray binary not found in archive');
 
-  run(`sudo install -m 755 "${tmpBin}" "${XRAY_BIN}"`);
+  run(`${sudoPrefix()}install -m 755 "${tmpBin}" "${XRAY_BIN}"`);
   if (PLATFORM === 'macos') run(`xattr -d com.apple.quarantine "${XRAY_BIN}" 2>/dev/null || true`);
   run(`rm -rf "${tmpDir}"`);
   success(`xray ${latest} installed to ${XRAY_BIN}`);
@@ -180,8 +195,8 @@ function installStartup() {
     const content = fs.readFileSync(src, 'utf8')
       .replace(/\/home\/__USER__/g, HOME)
       .replace(/__USER__/g, user);
-    run(`sudo tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
-    run('sudo systemctl daemon-reload');
+    run(`${sudoPrefix()}tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
+    run(`${sudoPrefix()}systemctl daemon-reload`);
     success(`systemd service installed: ${dst}`);
     info('Enable autostart: xray-ctl autostart on');
     info('Start:            xray-ctl start');
@@ -193,8 +208,8 @@ function installStartup() {
     const content = fs.readFileSync(src, 'utf8')
       .replace(/\/home\/__USER__/g, HOME)
       .replace(/__USER__/g, user);
-    run(`sudo tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
-    run(`sudo chmod +x "${dst}"`);
+    run(`${sudoPrefix()}tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
+    run(`${sudoPrefix()}chmod +x "${dst}"`);
     success(`OpenRC init script installed: ${dst}`);
     info('Enable autostart: xray-ctl autostart on');
     info('Start:            xray-ctl start');
@@ -206,8 +221,8 @@ function installStartup() {
     const content = fs.readFileSync(src, 'utf8')
       .replace(/\/home\/__USER__/g, HOME)
       .replace(/__USER__/g, user);
-    run(`sudo tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
-    run(`sudo chmod 555 "${dst}"`);
+    run(`${sudoPrefix()}tee "${dst}" > /dev/null`, { input: content, stdio: ['pipe', 'inherit', 'inherit'] });
+    run(`${sudoPrefix()}chmod 555 "${dst}"`);
     success(`rc.d script installed: ${dst}`);
     info(`Enable: sysrc smartxray_enable=YES`);
   }
@@ -269,7 +284,7 @@ async function installCtl() {
       warn('未找到 bundle 来源，回退到 legacy src/xray-ctl 脚本模式...');
       try {
         const legacySrc = path.join(REPO_ROOT, 'src', 'xray-ctl');
-        execSync(`sudo cp "${legacySrc}" "${CTL_BIN}" && sudo chmod 755 "${CTL_BIN}"`, { stdio: 'pipe' });
+        execSync(`${sudoPrefix()}cp "${legacySrc}" "${CTL_BIN}" && ${sudoPrefix()}chmod 755 "${CTL_BIN}"`, { stdio: 'pipe' });
         success(`xray-ctl installed to ${CTL_BIN} (legacy mode)`);
       } catch {
         const local = path.join(HOME, '.local/bin/xray-ctl');
@@ -283,15 +298,15 @@ async function installCtl() {
   }
 
   // 4. 安装 bundle 到 /usr/local/lib/smartxray/
-  run(`sudo mkdir -p "${LIB_DIR}"`);
-  // 使用 find+cp 确保 WASM 等文件全部复制
-  run(`sudo sh -c 'cp -r "${bundleSrc}/." "${LIB_DIR}/"'`);
+  run(`${sudoPrefix()}mkdir -p "${LIB_DIR}"`);
+  // 复制 bundle 文件，排除 macOS 资源分支文件 (._*)
+  run(`${sudoPrefix()}sh -c 'cd "${bundleSrc}" && for f in *; do case "$f" in .*) ;; *) cp -r "$f" "${LIB_DIR}/" ;; esac; done'`);
 
   // 5. 创建 shim 脚本 /usr/local/bin/xray-ctl
   const shimContent = `#!/bin/sh\nexec node "${LIB_DIR}/index.js" "$@"\n`;
   const tmpShim = path.join(os.tmpdir(), 'xray-ctl-shim');
   fs.writeFileSync(tmpShim, shimContent);
-  run(`sudo install -m 755 "${tmpShim}" "${CTL_BIN}"`);
+  run(`${sudoPrefix()}install -m 755 "${tmpShim}" "${CTL_BIN}"`);
   try { fs.unlinkSync(tmpShim); } catch {}
 
   // 6. 清理临时解压目录

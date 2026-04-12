@@ -1,6 +1,6 @@
 {
   "name": "smartxray",
-  "version": "2.4.1",
+  "version": "3.0.0",
   "description": "Xray server manager with SQLite, dynamic config, firewall & Web UI",
   "main": "src/xray-ctl",
   "scripts": {
@@ -13,7 +13,8 @@
     "nodemailer": "^6.9.9"
   },
   "devDependencies": {
-    "@vercel/ncc": "^0.38.3"
+    "@vercel/ncc": "^0.38.3",
+    "javascript-obfuscator": "^4.1.1"
   },
   "engines": {
     "node": ">=18"
