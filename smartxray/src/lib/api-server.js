@@ -46,7 +46,53 @@ const { apiResponse, parseBody } = require('./utils');
 let _commands = {};
 function registerCommands(cmds) { _commands = cmds; }
 
+// ==================== 管理员认证（Cookie 方式，与 UI 保持一致）====================
+
+function makeAuthToken(pwd) {
+  return crypto.createHash('sha256').update(`smartxray:${pwd}`).digest('hex').slice(0, 32);
+}
+
+function isAuthenticated(req) {
+  const adminPwd = getSetting('admin_password', '');
+  if (!adminPwd) return true;  // 未设置密码则无需认证
+  const token = makeAuthToken(adminPwd);
+  const cookies = parseCookies(req.headers.cookie);
+  if (cookies._sxtoken === token) return true;
+  const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (auth === token || auth === adminPwd) return true;
+  return false;
+}
+
 // ==================== 工具函数 ====================
+
+// 端口分配（与旧版一致：随机策略）
+function _allocPort(min, max) {
+  const rows1 = db().prepare('SELECT port FROM users').all();
+  const rows2 = db().prepare('SELECT http_port as port FROM users WHERE http_port IS NOT NULL').all();
+  const used = new Set();
+  for (const r of rows1) if (r.port) used.add(r.port);
+  for (const r of rows2) if (r.port) used.add(r.port);
+  let p, tries = 0;
+  do { p = min + Math.floor(Math.random() * (max - min + 1)); tries++; }
+  while (used.has(p) && tries < 2000);
+  if (used.has(p)) throw new Error('端口区间已满');
+  return p;
+}
+
+const LOGIN_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SmartXray Login</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#1a1f2e;border:1px solid #2d3748;border-radius:12px;padding:36px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+h1{font-size:1.3rem;color:#63b3ed;margin-bottom:6px}p.sub{font-size:.82rem;color:#718096;margin-bottom:24px}
+label{display:block;font-size:.8rem;color:#a0aec0;margin-bottom:4px}
+input{width:100%;padding:10px 14px;background:#131720;border:1px solid #2d3748;border-radius:8px;color:#e2e8f0;font-size:.95rem;outline:none;margin-bottom:16px}input:focus{border-color:#63b3ed}
+button{width:100%;padding:10px;background:#3182ce;color:#fff;border:none;border-radius:8px;font-size:.9rem;cursor:pointer}button:hover{background:#2b6cb0}
+.err{color:#fc8181;font-size:.82rem;margin-top:10px;display:none}</style></head>
+<body><div class="card"><h1>SmartXray</h1><p class="sub">请输入管理密码</p>
+<label>密码</label><input type="password" id="pwd" placeholder="admin password" autofocus onkeydown="if(event.key==='Enter')doLogin()">
+<button onclick="doLogin()">登录</button><p class="err" id="err">密码错误</p></div>
+<script>async function doLogin(){const p=document.getElementById('pwd').value;if(!p)return;
+const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+const d=await r.json();if(d.ok){location.href='/admin'}else{const e=document.getElementById('err');e.style.display='block';e.textContent=d.error||'密码错误'}}</script></body></html>`;
 
 /**
  * 解析 Cookie
@@ -146,17 +192,43 @@ function startApiServer() {
       // 解析请求体
       const json = method !== 'GET' ? await parseBody(req) : {};
 
-      // 静态文件服务
-      if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+      // 静态文件服务 — 门户页面（公开）
+      if (method === 'GET' && (pathname === '/' || pathname === '/portal' || pathname === '/portal.html')) {
+        const portalFile = path.join(UI_DIR, 'portal.html');
+        if (fs.existsSync(portalFile)) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(fs.readFileSync(portalFile));
+        }
+        // portal 不存在时 fallback 到管理面板
+        if (pathname === '/') {
+          if (!isAuthenticated(req)) {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            return res.end(LOGIN_HTML);
+          }
+          const indexFile = path.join(UI_DIR, 'index.html');
+          if (fs.existsSync(indexFile)) {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            return res.end(fs.readFileSync(indexFile));
+          }
+        }
+      }
+
+      // 静态文件服务 — 管理面板（需认证）
+      if (method === 'GET' && (pathname === '/admin' || pathname === '/admin/' || pathname === '/ui' || pathname === '/ui/' || pathname === '/index.html')) {
+        if (!isAuthenticated(req)) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(LOGIN_HTML);
+        }
         const htmlFile = path.join(UI_DIR, 'index.html');
         if (fs.existsSync(htmlFile)) {
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           return res.end(fs.readFileSync(htmlFile));
         }
+        res.writeHead(404); return res.end('UI not found. Run install first.');
       }
 
       // 自助页面
-      if (method === 'GET' && (pathname === '/self' || pathname === '/self.html')) {
+      if (method === 'GET' && (pathname === '/self' || pathname === '/self/' || pathname === '/self.html')) {
         const htmlFile = path.join(UI_DIR, 'self-service.html');
         if (fs.existsSync(htmlFile)) {
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -165,17 +237,8 @@ function startApiServer() {
       }
 
       // 用户页面
-      if (method === 'GET' && (pathname === '/user' || pathname === '/user.html')) {
+      if (method === 'GET' && (pathname === '/my' || pathname === '/my/' || pathname === '/user' || pathname === '/user.html')) {
         const htmlFile = path.join(UI_DIR, 'user.html');
-        if (fs.existsSync(htmlFile)) {
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          return res.end(fs.readFileSync(htmlFile));
-        }
-      }
-
-      // 门户页面
-      if (method === 'GET' && (pathname === '/portal' || pathname === '/portal.html')) {
-        const htmlFile = path.join(UI_DIR, 'portal.html');
         if (fs.existsSync(htmlFile)) {
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           return res.end(fs.readFileSync(htmlFile));
@@ -184,19 +247,37 @@ function startApiServer() {
 
       // API 路由
       if (pathname.startsWith('/api/')) {
-        // 登录
+        // POST /api/login — 登录认证（无需已认证）
         if (method === 'POST' && pathname === '/api/login') {
-          return await routes.handleLogin(req, res, json);
+          const adminPwd = getSetting('admin_password', '');
+          if (!adminPwd) return apiResponse(res, 200, { ok: true });
+          if (json.password !== adminPwd)
+            return apiResponse(res, 401, { error: '密码错误' });
+          const token = makeAuthToken(adminPwd);
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': `_sxtoken=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`,
+            'Access-Control-Allow-Origin': '*',
+          });
+          return res.end(JSON.stringify({ ok: true }));
         }
 
-        // 登出
+        // POST /api/logout — 清除认证
         if (method === 'POST' && pathname === '/api/logout') {
-          return await routes.handleLogout(req, res);
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Set-Cookie': '_sxtoken=; Path=/; HttpOnly; Max-Age=0',
+            'Access-Control-Allow-Origin': '*',
+          });
+          return res.end(JSON.stringify({ ok: true }));
         }
 
-        // 验证 token
-        if (method === 'POST' && pathname === '/api/verify-token') {
-          return await routes.handleVerifyToken(req, res, json);
+        // 公开 API（不需要管理密码）
+        const isPublicApi = pathname.startsWith('/api/self/') || pathname.startsWith('/api/user/') || pathname === '/api/shared' || pathname === '/api/public/info' || pathname === '/api/help';
+
+        // 其他 API 需要认证
+        if (!isPublicApi && !isAuthenticated(req)) {
+          return apiResponse(res, 401, { error: '未认证，请先登录' });
         }
 
         // GET /api/status — 概览页用
@@ -216,18 +297,52 @@ function startApiServer() {
 
         // 添加用户
         if (method === 'POST' && pathname === '/api/users') {
-          return await routes.handleUserAdd(req, res, json);
+          const name     = json.name || `user-${Date.now()}`;
+          const protocol = (json.protocol || 'socks').toLowerCase();
+          const username = json.username || crypto.randomBytes(4).toString('hex');
+          const password = json.password || crypto.randomBytes(6).toString('hex');
+          let socksPort, httpPort;
+          try {
+            const pr = getFixedPortRange(getSetting);
+            socksPort = _allocPort(pr.socksMin, pr.socksMax);
+            httpPort  = _allocPort(pr.httpMin,  pr.httpMax);
+          } catch { return apiResponse(res, 500, { error: '端口不足' }); }
+          const uuid = crypto.randomUUID();
+          const tag  = `u-${name}-${socksPort}`;
+          try {
+            db().prepare(
+              `INSERT INTO users (name,port,http_port,uuid,protocol,username,password,tag)
+               VALUES (?,?,?,?,?,?,?,?)`
+            ).run(name, socksPort, httpPort, uuid, protocol, username, password, tag);
+            if (_commands.cmdReload) _commands.cmdReload();
+            return apiResponse(res, 201, db().prepare('SELECT * FROM users WHERE name=?').get(name));
+          } catch (e) {
+            return apiResponse(res, 400, { error: e.message });
+          }
         }
 
-        // 删除用户
-        if (method === 'DELETE' && pathname === '/api/users') {
-          return await routes.handleUserDelete(req, res, json);
+        // 删除用户 — DELETE /api/users/:id
+        const delMatch = pathname.match(/^\/api\/users\/(\d+)$/);
+        if (method === 'DELETE' && delMatch) {
+          const user = db().prepare('SELECT * FROM users WHERE id=?').get(parseInt(delMatch[1]));
+          if (!user) return apiResponse(res, 404, { error: 'not found' });
+          db().prepare('DELETE FROM users WHERE id=?').run(user.id);
+          if (_commands.cmdReload) _commands.cmdReload();
+          return apiResponse(res, 200, { ok: true });
         }
 
-        // 用户操作
-        if (method === 'PATCH' && pathname.startsWith('/api/users/')) {
-          const action = pathname.split('/').pop();
-          return await routes.handleUserAction(req, res, json, action);
+        // 更新用户 — PATCH /api/users/:id { enabled, password, note }
+        const patchMatch = pathname.match(/^\/api\/users\/(\d+)$/);
+        if (method === 'PATCH' && patchMatch) {
+          const user = db().prepare('SELECT * FROM users WHERE id=?').get(parseInt(patchMatch[1]));
+          if (!user) return apiResponse(res, 404, { error: 'not found' });
+          if (typeof json.enabled !== 'undefined') {
+            db().prepare('UPDATE users SET enabled=? WHERE id=?').run(json.enabled ? 1 : 0, user.id);
+          }
+          if (json.password) db().prepare('UPDATE users SET password=? WHERE id=?').run(json.password, user.id);
+          if (json.note !== undefined) db().prepare('UPDATE users SET note=? WHERE id=?').run(json.note, user.id);
+          if (_commands.cmdReload) _commands.cmdReload();
+          return apiResponse(res, 200, db().prepare('SELECT * FROM users WHERE id=?').get(user.id));
         }
 
         // 获取统计信息
@@ -259,12 +374,30 @@ function startApiServer() {
 
         // 获取设置
         if (method === 'GET' && pathname === '/api/settings') {
-          return routes.handleGetSettings(req, res);
+          return apiResponse(res, 200, {
+            server_ip:          getSetting('server_ip', ''),
+            public_host:        getSetting('public_host', ''),
+            log_level:          getSetting('log_level', 'warning'),
+            upstream_outbounds: getSetting('upstream_outbounds', ''),
+            use_upstream:       getSetting('use_upstream', '0') === '1',
+          });
         }
 
         // 更新设置
         if (method === 'POST' && pathname === '/api/settings') {
-          return routes.handleUpdateSettings(req, res, json);
+          if (json.server_ip   !== undefined) setSetting('server_ip', json.server_ip);
+          if (json.public_host !== undefined) setSetting('public_host', json.public_host);
+          if (json.log_level   !== undefined) setSetting('log_level', json.log_level);
+          if (json.use_upstream !== undefined) setSetting('use_upstream', json.use_upstream ? '1' : '0');
+          if (json.upstream_outbounds !== undefined) {
+            if (json.upstream_outbounds) {
+              try { JSON.parse(json.upstream_outbounds); }
+              catch (e) { return apiResponse(res, 400, { error: 'upstream_outbounds JSON 格式错误: ' + e.message }); }
+            }
+            setSetting('upstream_outbounds', json.upstream_outbounds);
+          }
+          if (_commands.cmdReload) _commands.cmdReload();
+          return apiResponse(res, 200, { ok: true });
         }
 
         // 获取单个设置
