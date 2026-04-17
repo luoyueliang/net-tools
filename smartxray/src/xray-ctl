@@ -28,6 +28,7 @@ const firewall = require('./lib/firewall');
 const reality  = require('./lib/reality');
 const userManager = require('./lib/user-manager');
 const apiServer   = require('./lib/api-server');
+const { buildConfig } = require('./lib/config-generator');
 
 // ==================== 常量 ====================
 const VERSION     = config.VERSION;
@@ -69,11 +70,10 @@ async function cmdStart() {
     return;
   }
 
-  // 确保配置文件存在
-  if (!fs.existsSync(XRAY_CONF)) {
-    console.log(c.yellow('  配置文件不存在，使用默认配置'));
-    generateDefaultConfig();
-  }
+  // 生成完整配置（从数据库构建 inbounds）
+  console.log(c.dim('  正在生成 Xray 配置...'));
+  const builtCfg = buildConfig();
+  console.log(c.dim(`  已生成 ${builtCfg.inbounds.length} 个入站`));
 
   // 启动 Xray
   try {
@@ -165,6 +165,10 @@ function cmdReload() {
     return;
   }
 
+  // 先重新生成配置再发信号
+  const builtCfg = buildConfig();
+  console.log(c.dim(`  已更新配置 (${builtCfg.inbounds.length} 个入站)`));
+
   const pid = readPid();
   try {
     process.kill(pid, 'SIGUSR1');
@@ -172,6 +176,17 @@ function cmdReload() {
   } catch (e) {
     console.log(c.red(`  ✗ 重载失败: ${e.message}`));
   }
+}
+
+/**
+ * 重新生成配置并热重载 Xray（用户操作后调用）
+ */
+function regenAndReload() {
+  if (!isRunning()) return;
+  const builtCfg = buildConfig();
+  console.log(c.dim(`  已更新配置 (${builtCfg.inbounds.length} 个入站)`));
+  const pid = readPid();
+  try { process.kill(pid, 'SIGUSR1'); } catch {}
 }
 
 function findXrayBinary() {
@@ -189,17 +204,6 @@ function findXrayBinary() {
   }
 
   return null;
-}
-
-function generateDefaultConfig() {
-  const defaultConfig = {
-    log: { loglevel: database.getSetting('log_level', 'warning') },
-    inbounds: [],
-    outbounds: [{ protocol: 'freedom', tag: 'direct' }],
-    routing: { rules: [] }
-  };
-
-  fs.writeFileSync(XRAY_CONF, JSON.stringify(defaultConfig, null, 2));
 }
 
 // ==================== 用户管理命令 ====================
@@ -228,6 +232,7 @@ function cmdUser(args) {
         console.log(`    用户名: ${user.username}`);
         console.log(`    密码: ${user.password}`);
         console.log(`    端口: ${user.port}`);
+        regenAndReload();
       } catch (e) {
         console.log(c.red(`  ✗ ${e.message}`));
       }
@@ -242,6 +247,7 @@ function cmdUser(args) {
         const identifier = isNaN(rest[0]) ? rest[0] : parseInt(rest[0]);
         userManager.removeUser(identifier);
         console.log(c.green('  ✓ 用户已删除'));
+        regenAndReload();
       } catch (e) {
         console.log(c.red(`  ✗ ${e.message}`));
       }
@@ -256,6 +262,7 @@ function cmdUser(args) {
         const identifier = isNaN(rest[0]) ? rest[0] : parseInt(rest[0]);
         userManager.enableUser(identifier);
         console.log(c.green('  ✓ 用户已启用'));
+        regenAndReload();
       } catch (e) {
         console.log(c.red(`  ✗ ${e.message}`));
       }
@@ -270,6 +277,7 @@ function cmdUser(args) {
         const identifier = isNaN(rest[0]) ? rest[0] : parseInt(rest[0]);
         userManager.disableUser(identifier);
         console.log(c.green('  ✓ 用户已禁用'));
+        regenAndReload();
       } catch (e) {
         console.log(c.red(`  ✗ ${e.message}`));
       }
@@ -298,6 +306,7 @@ function cmdUser(args) {
         const identifier = isNaN(rest[0]) ? rest[0] : parseInt(rest[0]);
         const user = userManager.setUserPort(identifier, parseInt(rest[1]), rest[2] ? parseInt(rest[2]) : null);
         console.log(c.green(`  ✓ 端口已更新: ${user.port}`));
+        regenAndReload();
       } catch (e) {
         console.log(c.red(`  ✗ ${e.message}`));
       }
