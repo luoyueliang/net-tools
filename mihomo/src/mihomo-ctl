@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.5.1';
+const VERSION     = '1.5.3';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -337,20 +337,16 @@ const PLATFORM_ADAPTERS = {
     setDnsToMihomo(iface) {
       execSync(`sudo networksetup -setdnsservers "${iface}" 127.0.0.1`, { stdio: ['inherit', 'pipe', 'pipe'] });
     },
-    async restoreAll(iface, dnsToRestore) {
-      // ⚠️ 顺序：先切到可用 DNS，再移除 pf anchor，避免 DNS 短暂中断
-      let transit = dnsToRestore?.length ? dnsToRestore : null;
-      if (!transit) {
-        const gw = run(`netstat -rn | awk '/^default/{print $2; exit}'`).trim();
-        transit = (gw && gw.match(/^\d+\.\d+\.\d+\.\d+/)) ? [gw] : ['8.8.8.8'];
-      }
-      const dnsArgs = transit.map(s => `"${s}"`).join(' ');
-      execSync(`sudo networksetup -setdnsservers "${iface}" ${dnsArgs}`, { stdio: 'inherit' });
+    async restoreAll(iface, _dnsToRestore) {
+      // 始终清空手动 DNS，让系统回到 DHCP 自动分配。
+      // 不恢复 dns-on 时保存的静态 IP：笔记本换网络后那个 IP 已失效，
+      // 强制 restore 会导致 DNS 断网。
+      execSync(`sudo networksetup -setdnsservers "${iface}" empty`, { stdio: 'inherit' });
       run('dscacheutil -flushcache 2>/dev/null || true');
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 300));
       execSync(`sudo pfctl -a 'com.apple/mihomo-dns' -F nat`, { stdio: 'inherit' });
       try { fs.unlinkSync(PF_CONF); } catch {}
-      return dnsToRestore?.length ? dnsToRestore.join(', ') : `${transit.join(', ')} (将随 DHCP 更新)`;
+      return 'DHCP 自动';
     },
     flushDns()        { run('dscacheutil -flushcache 2>/dev/null || true'); },
     isDnsActive(iface) { return this.getDnsServers(iface).includes('127.0.0.1'); },
@@ -1219,6 +1215,10 @@ async function cmdDnsOn() {
 }
 
 async function cmdDnsOff({ keepAutostart = false } = {}) {
+  if (!fs.existsSync(DNS_BACKUP_FILE)) {
+    console.log(c.dim('DNS 未处于接管状态，无需关闭'));
+    return;
+  }
   let iface = P.getActiveInterface(), dnsToRestore = null, adapter = P;
   try {
     const bak = JSON.parse(fs.readFileSync(DNS_BACKUP_FILE, 'utf8'));
