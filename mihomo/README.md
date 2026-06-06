@@ -228,7 +228,7 @@ mihomo-ctl mode direct        全局直连（跳过代理）
 
 ```
 mihomo-ctl geo                查看数据文件状态及定时任务
-mihomo-ctl geo update         立即下载最新 geoip.dat / geosite.dat
+mihomo-ctl geo update         立即下载最新 GeoIP/GeoSite（MMDB 或 DAT，随 geodata-mode 自动选择）
 mihomo-ctl geo schedule       设置每周一 03:00 自动更新（cron）
 mihomo-ctl geo unschedule     取消自动更新
 ```
@@ -344,7 +344,7 @@ unset https_proxy http_proxy
 | `scripts/platform/alpine/mihomo.openrc` | Alpine Linux OpenRC 脚本，安装到 `/etc/init.d/mihomo` |
 | `scripts/platform/freebsd/mihomo.rc` | FreeBSD rc.d 脚本 |
 | `scripts/platform/openwrt/mihomo.init` | OpenWrt init.d 脚本 |
-| `data/` | GeoIP / GeoSite 数据文件（geoip.dat、geosite.dat），运行时放入 `~/.config/mihomo/data/` |
+| `data/` | GeoIP / GeoSite 数据占位目录；运行时 mihomo 实际将 `geoip.metadb`（MMDB 模式）/ `geosite.dat` 放在 `~/.config/mihomo/` 根目录 |
 | `logs/` | 日志目录占位，运行时日志写入 `~/.config/mihomo/logs/mihomo.log` |
 
 运行时配置位于 `~/.config/mihomo/`，与本仓库相互独立：

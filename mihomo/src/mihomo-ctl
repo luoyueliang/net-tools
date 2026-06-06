@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.5.4';
+const VERSION     = '1.5.5';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -49,9 +49,28 @@ const c = {
   dim:   s => `\x1b[2m${s}\x1b[0m`,
 };
 
+// external-controller secret：从 config.yaml 读取，给所有 API 调用加 Authorization 头
+// （用户给 9090 设了 secret 后，CLI 不加此头会被 401，所有命令失效）
+let _secretCache;
+function getSecret() {
+  if (_secretCache !== undefined) return _secretCache;
+  _secretCache = '';
+  try {
+    const m = fs.readFileSync(CONFIG, 'utf8').match(/^secret:\s*["']?([^"'#\s]+)["']?/m);
+    if (m) _secretCache = m[1];
+  } catch {}
+  return _secretCache;
+}
+function authHeaders(extra) {
+  const h = extra ? { ...extra } : {};
+  const s = getSecret();
+  if (s) h['Authorization'] = `Bearer ${s}`;
+  return h;
+}
+
 function apiGet(path) {
   return new Promise((resolve, reject) => {
-    const req = http.get(`${API}${path}`, { timeout: 3000 }, res => {
+    const req = http.get(`${API}${path}`, { timeout: 3000, headers: authHeaders() }, res => {
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => {
@@ -69,7 +88,7 @@ function apiPut(path, body) {
     const data = JSON.stringify(body);
     const opts = {
       hostname: '127.0.0.1', port: 9090, path, method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      headers: authHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }),
       timeout: 3000,
     };
     const req = http.request(opts, res => {
@@ -89,7 +108,7 @@ function apiPatch(urlPath, body) {
     const data = JSON.stringify(body);
     const req = http.request({
       hostname: '127.0.0.1', port: 9090, path: urlPath, method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      headers: authHeaders({ 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }),
       timeout: 3000,
     }, res => { res.resume(); resolve(res.statusCode); });
     req.on('error', reject);
@@ -102,6 +121,7 @@ function apiDelete(urlPath) {
   return new Promise((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1', port: 9090, path: urlPath, method: 'DELETE', timeout: 3000,
+      headers: authHeaders(),
     }, res => { res.resume(); resolve(res.statusCode); });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
@@ -846,11 +866,23 @@ PLATFORM_ADAPTERS.freebsd = createFreeBSDAdapter('freebsd', 'sudo service mihomo
 // 全局平台适配器实例（唯一入口）
 const P = PLATFORM_ADAPTERS[detectPlatform()] || PLATFORM_ADAPTERS.linux;
 
+// 检测占用 API 的内核是否是「我们自己的」mihomo（-d CONFIG_DIR）
+// 用于排除 ClashX Meta / Clash Verge 等占用 9090 端口造成的 isRunning 误判
+function ownKernelRunning() {
+  if (IS_WIN) return true; // Windows 进程名/参数检测不可靠，跳过严格校验
+  const hit = run(`pgrep -f "mihomo -d ${CONFIG_DIR}" 2>/dev/null`)
+           || run(`ps -axww -o pid=,command= 2>/dev/null | grep -- "-d ${CONFIG_DIR}" | grep mihomo | grep -v grep`);
+  return !!(hit && hit.trim());
+}
+
 async function isRunning() {
   try {
     const res = await apiGet('/version');
     // 验证是真正的 Mihomo API（ClashX 等其他程序占用 9090 时返回 401 {"message":"Unauthorized"}）
-    return typeof res === 'object' && typeof res.version === 'string' && res.version.length > 0;
+    const apiUp = typeof res === 'object' && typeof res.version === 'string' && res.version.length > 0;
+    if (!apiUp) return false;
+    // 进一步确认占用 9090 的是我们自己的内核，而非 ClashX/Verge 等第三方核心
+    return ownKernelRunning();
   } catch { return false; }
 }
 
@@ -941,11 +973,8 @@ async function cmdStatus() {
     }
   }
 
-  // Geo 文件新鲜度（GeoIP + GeoSite）
-  const geoFiles = [
-    { label: 'GeoIP',   file: `${DATA_DIR}/geoip.dat`   },
-    { label: 'GeoSite', file: `${DATA_DIR}/geosite.dat` },
-  ];
+  // Geo 文件新鲜度（GeoIP + GeoSite）—— 实际位于 CONFIG_DIR 根，文件名随 geodata-mode
+  const geoFiles = getGeoFiles().map(g => ({ label: g.label, file: path.join(CONFIG_DIR, g.name) }));
   const geoParts = geoFiles.map(({ label, file }) => {
     if (!fs.existsSync(file)) return `${label}: ${c.red('未下载')}`;
     const days = Math.floor((Date.now() - fs.statSync(file).mtimeMs) / 86400000);
@@ -1003,6 +1032,7 @@ async function cmdTest() {
         hostname: '127.0.0.1', port: 9090,
         path: `/proxies/${encodeURIComponent(name)}/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=5000`,
         method: 'GET', timeout: 8000,
+        headers: authHeaders(),
       };
       const req = http.request(opts, res => {
         let d = '';
@@ -1480,19 +1510,43 @@ async function cmdLogOff() {
 }
 
 // ─── 命令：geo ─────────────────────────────────────────────────
-const GEO_FILES = [
-  { name: 'geoip.dat',   url: 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat' },
-  { name: 'geosite.dat', url: 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat' },
-];
+// Geo 文件放在 mihomo 工作目录根（-d 指向目录），不是 data/ 子目录。
+// 文件名取决于 geodata-mode：
+//   geodata-mode: false（默认/MMDB） → geoip.metadb + geosite.dat
+//   geodata-mode: true （DAT）        → geoip.dat    + geosite.dat
+function isGeodataMode() {
+  try { return /^geodata-mode:\s*true\b/m.test(fs.readFileSync(CONFIG, 'utf8')); }
+  catch { return false; }
+}
+
+// 在 CONFIG_DIR 中探测实际存在的文件名（兼容大小写差异，如 GeoSite.dat），
+// 用于检测/写入时优先匹配运行中内核正在读取的那个文件
+function resolveGeoFile(candidates) {
+  for (const n of candidates) {
+    if (fs.existsSync(path.join(CONFIG_DIR, n))) return n;
+  }
+  return candidates[0];
+}
+
+function getGeoFiles() {
+  const datMode  = isGeodataMode();
+  const base     = 'https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download';
+  const geoipDl  = datMode ? 'geoip.dat' : 'geoip.metadb';
+  return [
+    { label: 'GeoIP',   name: resolveGeoFile([geoipDl, 'geoip.metadb', 'geoip.dat']), url: `${base}/${geoipDl}` },
+    { label: 'GeoSite', name: resolveGeoFile(['geosite.dat', 'GeoSite.dat']),          url: `${base}/geosite.dat` },
+  ];
+}
 
 async function cmdGeoUpdate() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
   console.log(c.bold('\n── GeoIP / GeoSite 更新 ──────────────────────'));
+  console.log(c.dim(`  模式: ${isGeodataMode() ? 'geodata (.dat)' : 'MMDB (.metadb)'}   目录: ${CONFIG_DIR}`));
   let ok = 0;
-  for (const { name, url } of GEO_FILES) {
-    const dst = `${DATA_DIR}/${name}`;
+  for (const { label, name, url } of getGeoFiles()) {
+    const dst = path.join(CONFIG_DIR, name);
     const tmp = path.join(TMP, `${name}.tmp`);
-    process.stdout.write(`  下载 ${name}... `);
+    process.stdout.write(`  下载 ${label} (${name})... `);
     try {
       run(`curl -fsSL -4 -L --max-time 60 ${resolveProxyArg()} -o "${tmp}" "${url}" 2>/dev/null`);
       if (!fs.existsSync(tmp) || fs.statSync(tmp).size < 100000) {
@@ -1551,8 +1605,9 @@ async function cmdGeo(sub) {
   if (sub === 'schedule')   return cmdGeoSchedule('schedule');
   if (sub === 'unschedule') return cmdGeoSchedule('unschedule');
   console.log(c.bold('\n── GeoIP 状态 ────────────────────────────────'));
-  for (const { name } of GEO_FILES) {
-    const p = `${DATA_DIR}/${name}`;
+  console.log(c.dim(`  模式: ${isGeodataMode() ? 'geodata (.dat)' : 'MMDB (.metadb)'}   目录: ${CONFIG_DIR}`));
+  for (const { name } of getGeoFiles()) {
+    const p = path.join(CONFIG_DIR, name);
     if (fs.existsSync(p)) {
       const days = Math.floor((Date.now() - fs.statSync(p).mtimeMs) / 86400000);
       const size = (fs.statSync(p).size / 1024 / 1024).toFixed(1);
@@ -1573,24 +1628,17 @@ async function cmdReload(quiet = false) {
     if (!quiet) console.log(c.red('Mihomo 未运行'));
     return;
   }
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ path: CONFIG });
-    const req  = http.request({
-      hostname: '127.0.0.1', port: 9090,
-      path: '/configs?force=true', method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 5000,
-    }, res => {
-      res.resume();
-      if (!quiet) {
-        if (res.statusCode === 204) console.log(c.green('✓ 配置已热重载（连接不中断）'));
-        else console.log(c.yellow(`⚠ 返回 ${res.statusCode}，查看日志: mihomo-ctl log-on`));
-      }
-      resolve(res.statusCode);
-    });
-    req.on('error', e => { if (!quiet) console.log(c.red(`✗ ${e.message}`)); reject(e); });
-    req.write(body); req.end();
-  });
+  try {
+    const { status } = await apiPut('/configs?force=true', { path: CONFIG });
+    if (!quiet) {
+      if (status === 204) console.log(c.green('✓ 配置已热重载（连接不中断）'));
+      else console.log(c.yellow(`⚠ 返回 ${status}，查看日志: mihomo-ctl log-on`));
+    }
+    return status;
+  } catch (e) {
+    if (!quiet) console.log(c.red(`✗ ${e.message}`));
+    throw e;
+  }
 }
 
 // ─── 命令：tun-on / tun-off ──────────────────────────────────
@@ -1728,14 +1776,21 @@ async function cmdTraffic() {
   console.log(c.bold('\n── 实时流量 ─────────────────────────────────'));
   console.log(c.dim('  按 Ctrl+C 退出\n'));
   const fmtSpeed = b => b > 1e6 ? `${(b/1e6).toFixed(1)} MB/s` : b > 1e3 ? `${(b/1e3).toFixed(0)} KB/s` : `${b} B/s`;
-  const req = http.get(`${API}/traffic`, { timeout: 0 }, res => {
+  const req = http.get(`${API}/traffic`, { headers: authHeaders() }, res => {
+    let buf = '';
     res.on('data', chunk => {
-      try {
-        // SSE 每行可能带 "data: " 前缀
-        const raw = chunk.toString().replace(/^data:\s*/m, '').trim();
-        const { up = 0, down = 0 } = JSON.parse(raw);
-        process.stdout.write(`\r  \u2191 ${c.yellow(fmtSpeed(up).padEnd(12))}  \u2193 ${c.cyan(fmtSpeed(down).padEnd(12))}  `);
-      } catch {}
+      buf += chunk.toString();
+      // SSE 数据可能粘包/拆包，按换行切分逐条解析
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const { up = 0, down = 0 } = JSON.parse(line.replace(/^data:\s*/, ''));
+          process.stdout.write(`\r  \u2191 ${c.yellow(fmtSpeed(up).padEnd(12))}  \u2193 ${c.cyan(fmtSpeed(down).padEnd(12))}  `);
+        } catch {}
+      }
     });
     res.on('end', () => console.log('\n  连接已关闭'));
   });
@@ -2466,7 +2521,7 @@ ${c.cyan('开机自启（默认禁用）')}
 
 ${c.cyan('GeoIP / GeoSite 数据')}
   mihomo-ctl geo              查看数据文件状态及定时任务
-  mihomo-ctl geo update       立即下载最新 geoip.dat / geosite.dat
+  mihomo-ctl geo update       立即下载最新 GeoIP/GeoSite 数据（MMDB 或 DAT，随 geodata-mode）
   mihomo-ctl geo schedule     设置每周一 03:00 自动更新（cron）
   mihomo-ctl geo unschedule   取消自动更新
 
@@ -2523,7 +2578,7 @@ ${c.cyan('终端临时代理（所有平台）')}
 
 ${c.cyan('配置文件')}
   ~/.config/mihomo/config.yaml
-  ~/.config/mihomo/data/        geoip.dat / geosite.dat
+  ~/.config/mihomo/            geoip.metadb / geosite.dat（MMDB 模式，文件名随 geodata-mode）
   ~/.config/mihomo/logs/        mihomo.log / geo-update.log
   ${PLIST}
 `);
