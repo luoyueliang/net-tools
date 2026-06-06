@@ -242,24 +242,28 @@ mihomo-ctl connections        列出活跃连接
 mihomo-ctl connections close-all  断开所有连接
 ```
 
-**Web UI**
+**Web UI（可切换面板）**
 
 ```
-mihomo-ctl ui                 查看 Web UI 安装状态
-mihomo-ctl ui install         安装到 ~/.config/mihomo/ui/（自动写入 external-ui）
+mihomo-ctl ui                 查看当前面板与切换提示
+mihomo-ctl ui local           切换为内置精简面板（本项目自带，单文件）
+mihomo-ctl ui meta            下载并切换为 MetaCubeXD（官方功能完整面板）
 mihomo-ctl ui open            浏览器打开 http://127.0.0.1:9090/ui/
 ```
 
-> `ui install` 会清理 mihomo 内核自动下载的默认面板（MetaCubeXD）残留，并设置
-> `external-ui-url: ''` 阻止内核启动时再次下载覆盖，确保始终使用本项目自带面板。
+> 两套面板任选：`ui local` 是本项目自带的轻量单文件页面；`ui meta` 直接从 GitHub
+> 下载 MetaCubeXD（gh-pages.zip，走系统代理）。切换后均会设置 `external-ui-url: ''`
+> 锁定，阻止内核启动时自动下载覆盖。切换完成执行 `mihomo-ctl reload` 生效。
 
-**菜单栏图标（macOS，需 [xbar](https://xbarapp.com) 或 [SwiftBar](https://github.com/swiftbar/SwiftBar)）**
+**菜单栏图标（macOS）**
 
 ```
 mihomo-ctl tray               输出菜单栏插件内容（由 xbar/SwiftBar 调用渲染）
-mihomo-ctl tray install       安装插件到 xbar / SwiftBar 插件目录
+mihomo-ctl tray install       安装菜单栏插件；未装时自动用 Homebrew 装 SwiftBar
 ```
 
+> `tray install` 插件脚本由 mihomo-ctl 内联生成，无需仓库源文件（安装后也能用）。
+> 若未安装 xbar / SwiftBar，会自动 `brew install --cask swiftbar` 并完成插件配置、启动 SwiftBar。
 > 菜单栏显示运行状态与当前节点，下拉菜单可一键 启动/停止/重启/切换系统代理或 TUN/打开面板。
 > 全部逻辑在 `mihomo-ctl tray` 中，插件脚本仅做转发，零原生编译、零 npm 依赖。
 

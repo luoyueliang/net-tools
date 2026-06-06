@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.5.6';
+const VERSION     = '1.5.7';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -2354,85 +2354,159 @@ function cmdLog() {
 }
 
 // ─── 命令：ui ──────────────────────────────────────────────────
-async function cmdUi(sub) {
-  // 找到本脚本同级的 ../ui/index.html
-  const scriptDir = path.dirname(fs.realpathSync(process.argv[1]));
-  const srcUi     = path.join(scriptDir, '..', 'ui', 'index.html');
-  // 安装位置（mihomo external-ui 指向的目录）
-  const dstUi     = UI_DIR;
+// 返回内置面板 HTML：打包后由 release.js 注入的 _BUNDLED_UI_（base64）提供；
+// 源码模式下回退读取仓库 ../ui/index.html。这样安装后无需任何源文件即可工作。
+function getBuiltinUiHtml() {
+  if (typeof _BUNDLED_UI_ !== 'undefined' && _BUNDLED_UI_) {
+    return Buffer.from(_BUNDLED_UI_, 'base64').toString('utf8');
+  }
+  try {
+    const scriptDir = path.dirname(fs.realpathSync(process.argv[1]));
+    const srcUi = path.join(scriptDir, '..', 'ui', 'index.html');
+    if (fs.existsSync(srcUi)) return fs.readFileSync(srcUi, 'utf8');
+  } catch {}
+  return '';
+}
 
-  if (sub === 'install') {
-    // 安装 UI 文件到 ~/.config/mihomo/ui/
-    if (!fs.existsSync(srcUi)) {
-      console.log(c.red(`✗ 找不到 UI 源文件: ${srcUi}`));
-      console.log(c.dim('  请从仓库目录运行，或先 git clone net-tools'));
+// 写入 config.yaml 的 external-ui；lock=true 时把 external-ui-url 置空，
+// 阻止内核启动时下载默认面板覆盖我们当前的面板。
+function writeExternalUiConfig(dstUi) {
+  if (!fs.existsSync(CONFIG)) return;
+  let yaml = fs.readFileSync(CONFIG, 'utf8');
+  if (/^external-ui:/m.test(yaml)) {
+    yaml = yaml.replace(/^external-ui:.*$/m, `external-ui: ${dstUi}`);
+  } else if (/^external-controller:/m.test(yaml)) {
+    yaml = yaml.replace(/(external-controller:[^\n]*)/, `$1\nexternal-ui: ${dstUi}`);
+  } else {
+    yaml += `\nexternal-ui: ${dstUi}\n`;
+  }
+  if (/^external-ui-url:/m.test(yaml)) {
+    yaml = yaml.replace(/^external-ui-url:.*$/m, `external-ui-url: ''`);
+  } else {
+    yaml = yaml.replace(/^external-ui:.*$/m, m => `${m}\nexternal-ui-url: ''`);
+  }
+  fs.writeFileSync(CONFIG, yaml);
+}
+
+// 探测当前 UI_DIR 里安装的是哪种面板（读 <title>）
+function detectActiveUi() {
+  const idx = path.join(UI_DIR, 'index.html');
+  if (!fs.existsSync(idx)) return { kind: 'none' };
+  let title = '';
+  try {
+    const m = fs.readFileSync(idx, 'utf8').match(/<title>([^<]*)<\/title>/i);
+    title = m ? m[1].trim() : '';
+  } catch {}
+  const mtime = fs.statSync(idx).mtimeMs;
+  if (/metacube/i.test(title)) return { kind: 'metacubexd', title, mtime };
+  if (/mihomo/i.test(title))   return { kind: 'local', title, mtime };
+  return { kind: 'unknown', title, mtime };
+}
+
+// 安装内置精简面板（本项目自带的单文件页面）
+function installLocalUi() {
+  const html = getBuiltinUiHtml();
+  if (!html) {
+    console.log(c.red('✗ 内置面板不可用（请从源码目录运行，或重装 mihomo-ctl）'));
+    return false;
+  }
+  if (fs.existsSync(UI_DIR)) {
+    for (const ent of fs.readdirSync(UI_DIR)) {
+      try { fs.rmSync(path.join(UI_DIR, ent), { recursive: true, force: true }); } catch {}
+    }
+  }
+  fs.mkdirSync(UI_DIR, { recursive: true });
+  fs.writeFileSync(path.join(UI_DIR, 'index.html'), html);
+  writeExternalUiConfig(UI_DIR);
+  console.log(c.green('\n  ✓ 已切换到内置面板（Mihomo CTL）'));
+  console.log(c.dim(`  路径: ${UI_DIR}/index.html`));
+  console.log(c.dim("  已锁定 external-ui-url: '' （内核不会再下载覆盖）"));
+  console.log(c.dim('\n  生效: mihomo-ctl reload    访问: http://127.0.0.1:9090/ui/'));
+  return true;
+}
+
+// 直接下载 MetaCubeXD（官方功能完整面板）并安装到 UI_DIR
+async function installMetaUi() {
+  const url = 'https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip';
+  console.log(c.bold('\n── 下载 MetaCubeXD 面板 ───────────────────────'));
+  console.log(c.dim(`  来源: ${url}`));
+  const tmpZip = path.join(TMP, `mcxd-${Date.now()}.zip`);
+  const tmpDir = path.join(TMP, `mcxd-${Date.now()}`);
+  process.stdout.write('  下载中... ');
+  run(`curl -fsSL -4 -L --max-time 120 ${resolveProxyArg()} -o "${tmpZip}" "${url}" 2>/dev/null`);
+  if (!fs.existsSync(tmpZip) || fs.statSync(tmpZip).size < 50000) {
+    console.log(c.red('✗ 下载失败或文件过小，请检查网络/代理'));
+    try { fs.unlinkSync(tmpZip); } catch {}
+    return false;
+  }
+  console.log(c.green(`✓ ${(fs.statSync(tmpZip).size / 1024 / 1024).toFixed(1)} MB`));
+
+  process.stdout.write('  解压中... ');
+  fs.mkdirSync(tmpDir, { recursive: true });
+  try { run(`unzip -oq "${tmpZip}" -d "${tmpDir}"`); }
+  catch (e) { console.log(c.red(`✗ 解压失败: ${e.message}`)); return false; }
+
+  // 找到含 index.html 的根目录（gh-pages.zip 解出 metacubexd-gh-pages/）
+  let srcRoot = tmpDir;
+  const top = fs.readdirSync(tmpDir);
+  if (!top.includes('index.html') && top.length === 1) srcRoot = path.join(tmpDir, top[0]);
+  if (!fs.existsSync(path.join(srcRoot, 'index.html'))) {
+    console.log(c.red('✗ 压缩包结构异常，未找到 index.html'));
+    try { fs.rmSync(tmpZip, { force: true }); fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    return false;
+  }
+
+  fs.rmSync(UI_DIR, { recursive: true, force: true });
+  fs.mkdirSync(UI_DIR, { recursive: true });
+  fs.cpSync(srcRoot, UI_DIR, { recursive: true });
+  console.log(c.green('✓ 完成'));
+  try { fs.rmSync(tmpZip, { force: true }); fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+
+  writeExternalUiConfig(UI_DIR);
+  console.log(c.green('\n  ✓ 已切换到 MetaCubeXD 面板'));
+  console.log(c.dim(`  路径: ${UI_DIR}/`));
+  console.log(c.dim('\n  生效: mihomo-ctl reload    访问: http://127.0.0.1:9090/ui/'));
+  return true;
+}
+
+async function cmdUi(sub) {
+  switch (sub) {
+    case 'local': case 'mine': case 'builtin': case 'self': case 'install':
+      installLocalUi();
+      return;
+    case 'meta': case 'metacubexd': case 'official': case 'mcxd':
+      await installMetaUi();
+      return;
+    case 'open': {
+      const url = 'http://127.0.0.1:9090/ui/';
+      if (IS_WIN) run(`start "" "${url}"`);
+      else run(`open "${url}" 2>/dev/null || xdg-open "${url}" 2>/dev/null || echo "${url}"`);
       return;
     }
-    // 清理 mihomo 内核此前自动下载的 MetaCubeXD 残留（_nuxt/_fonts/*.html 等），
-    // 否则浏览器可能加载到旧面板资产
-    if (fs.existsSync(dstUi)) {
-      for (const ent of fs.readdirSync(dstUi)) {
-        if (ent === 'index.html') continue;
-        try { fs.rmSync(path.join(dstUi, ent), { recursive: true, force: true }); } catch {}
-      }
-    }
-    fs.mkdirSync(dstUi, { recursive: true });
-    fs.copyFileSync(srcUi, path.join(dstUi, 'index.html'));
-    console.log(c.green(`\n  ✓ UI 已安装: ${dstUi}/index.html`));
-
-    // 写入 config.yaml 的 external-ui 字段，并禁止内核自动下载 MetaCubeXD
-    if (fs.existsSync(CONFIG)) {
-      let yaml = fs.readFileSync(CONFIG, 'utf8');
-      if (yaml.includes('external-ui:')) {
-        yaml = yaml.replace(/^external-ui:.*$/m, `external-ui: ${dstUi}`);
-      } else if (yaml.includes('external-controller:')) {
-        yaml = yaml.replace(
-          /(external-controller:[^\n]*)/,
-          `$1\nexternal-ui: ${dstUi}`
-        );
-      } else {
-        yaml += `\nexternal-ui: ${dstUi}\n`;
-      }
-      // external-ui-url 置空：阻止内核启动时重新下载 MetaCubeXD 覆盖我们的面板
-      if (/^external-ui-url:/m.test(yaml)) {
-        yaml = yaml.replace(/^external-ui-url:.*$/m, `external-ui-url: ''`);
-      } else {
-        yaml = yaml.replace(/^external-ui:.*$/m, m => `${m}\nexternal-ui-url: ''`);
-      }
-      fs.writeFileSync(CONFIG, yaml);
-      console.log(c.dim(`  已更新 config.yaml: external-ui: ${dstUi}`));
-      console.log(c.dim(`  已禁止内核自动下载默认面板（external-ui-url: ''）`));
-    }
-
-    console.log(c.dim('\n  重载配置: mihomo-ctl reload'));
-    console.log(c.dim(`  访问: http://127.0.0.1:9090/ui/`));
-    console.log(c.dim('  注意: 若 external-controller 仅绑定 127.0.0.1，无法远程访问'));
-    return;
   }
 
-  if (sub === 'open') {
-    const url = 'http://127.0.0.1:9090/ui/';
-    if (IS_WIN) run(`start "" "${url}"`);
-    else run(`open "${url}" 2>/dev/null || xdg-open "${url}" 2>/dev/null || echo "${url}"`);
-    return;
-  }
-
-  // 默认：打印状态
-  const installed = fs.existsSync(path.join(dstUi, 'index.html'));
+  // 默认：显示当前面板与切换提示
+  const active = detectActiveUi();
+  const labelMap = {
+    local: '内置面板 (Mihomo CTL)',
+    metacubexd: 'MetaCubeXD',
+    unknown: '未知面板',
+    none: '未安装',
+  };
   console.log(c.bold('\n── Mihomo Web UI ─────────────────────────────'));
-  if (installed) {
-    const stat = fs.statSync(path.join(dstUi, 'index.html'));
-    const days = Math.floor((Date.now() - stat.mtimeMs) / 86400000);
-    console.log(c.green(`  ✓ 已安装  更新于 ${days === 0 ? '今天' : days + ' 天前'}`));
-    console.log(c.dim(`  路径: ${dstUi}/index.html`));
-    console.log(c.dim('  访问: http://127.0.0.1:9090/ui/'));
+  if (active.kind === 'none') {
+    console.log(c.dim('  当前: 未安装（内核可能在启动时自动下载 MetaCubeXD）'));
   } else {
-    console.log(c.dim('  未安装'));
-    console.log(c.dim('  安装: mihomo-ctl ui install'));
+    const days = Math.floor((Date.now() - active.mtime) / 86400000);
+    console.log(`  当前: ${c.green(labelMap[active.kind])}   ${c.dim(`更新于 ${days === 0 ? '今天' : days + ' 天前'}`)}`);
+    console.log(c.dim(`  路径: ${UI_DIR}/`));
+    console.log(c.dim('  访问: http://127.0.0.1:9090/ui/'));
   }
-  console.log(c.dim('\n  子命令:'));
-  console.log(c.dim('    mihomo-ctl ui install   安装/更新 Web UI'));
-  console.log(c.dim('    mihomo-ctl ui open      浏览器打开'));
+  console.log(c.dim('\n  切换面板:'));
+  console.log(c.dim('    mihomo-ctl ui local    内置精简面板（本项目自带）'));
+  console.log(c.dim('    mihomo-ctl ui meta     下载 MetaCubeXD（官方功能完整面板）'));
+  console.log(c.dim('    mihomo-ctl ui open     浏览器打开'));
+  console.log(c.dim('  切换后执行 mihomo-ctl reload 生效'));
 }
 
 // ─── 命令：backup ──────────────────────────────────────────────
@@ -2544,14 +2618,15 @@ ${c.cyan('GeoIP / GeoSite 数据')}
   mihomo-ctl geo schedule     设置每周一 03:00 自动更新（cron）
   mihomo-ctl geo unschedule   取消自动更新
 
-${c.cyan('Web UI')}
-  mihomo-ctl ui              查看 Web UI 安装状态
-  mihomo-ctl ui install      安装/更新 Web UI 到 ~/.config/mihomo/ui/
+${c.cyan('Web UI（可切换面板）')}
+  mihomo-ctl ui              查看当前面板与切换提示
+  mihomo-ctl ui local        切换为内置精简面板（本项目自带）
+  mihomo-ctl ui meta         下载并切换为 MetaCubeXD（官方功能完整面板）
   mihomo-ctl ui open         浏览器打开 http://127.0.0.1:9090/ui/
 
-${c.cyan('菜单栏图标（macOS，需 xbar / SwiftBar）')}
+${c.cyan('菜单栏图标（macOS）')}
   mihomo-ctl tray            输出菜单栏插件内容（供 xbar/SwiftBar 调用）
-  mihomo-ctl tray install    安装菜单栏插件到 xbar / SwiftBar 插件目录
+  mihomo-ctl tray install    安装菜单栏插件；未装 SwiftBar 时自动用 brew 安装
 
 ${c.cyan('配置备份 & 恢复')}
   mihomo-ctl backup           备份当前 config.yaml（带时间戳）
@@ -2615,9 +2690,11 @@ async function cmdTray(sub) {
 
   let SELF;
   try { SELF = fs.realpathSync(process.argv[1]); } catch { SELF = process.argv[1]; }
+  // 通过 /bin/bash -c 包一层并显式补 PATH：macOS 菜单栏 App（xbar/SwiftBar）
+  // 拿到的 PATH 很精简，直接 exec node 脚本会因为找不到 node 而失败。
   const act = (label, ...params) => {
-    const p = params.map((v, i) => `param${i + 1}="${v}"`).join(' ');
-    return `${label} | bash="${SELF}" ${p} terminal=false refresh=true`;
+    const cmd = `export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; ${SELF} ${params.join(' ')}`;
+    return `${label} | bash=/bin/bash param1=-c param2="${cmd}" terminal=false refresh=true`;
   };
   const sep = '---';
 
@@ -2663,49 +2740,109 @@ async function cmdTray(sub) {
   console.log(act('🔄 刷新', 'tray'));
 }
 
-// 安装菜单栏插件到 xbar / SwiftBar 插件目录（仅 macOS）
+// 生成菜单栏插件脚本内容（xbar / SwiftBar 通用），内联生成无需任何源文件。
+function trayPluginScript(selfPath) {
+  return [
+    '#!/usr/bin/env bash',
+    '# Mihomo 菜单栏插件（xbar / SwiftBar 通用）',
+    '# <xbar.title>Mihomo Status</xbar.title>',
+    '# <xbar.version>v1.0</xbar.version>',
+    '# <xbar.author>net-tools</xbar.author>',
+    '# <xbar.desc>菜单栏显示 Mihomo 状态与快捷开关，由 mihomo-ctl tray 渲染。</xbar.desc>',
+    '# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>',
+    '# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>',
+    '',
+    '# 菜单栏 App 的 PATH 很精简，显式补上 node 常见位置',
+    'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:$PATH"',
+    '',
+    `CTL="${selfPath}"`,
+    '[ -x "$CTL" ] || CTL="$(command -v mihomo-ctl 2>/dev/null)"',
+    '[ -z "$CTL" ] && [ -x /usr/local/bin/mihomo-ctl ] && CTL=/usr/local/bin/mihomo-ctl',
+    '[ -z "$CTL" ] && [ -x /opt/homebrew/bin/mihomo-ctl ] && CTL=/opt/homebrew/bin/mihomo-ctl',
+    'if [ -z "$CTL" ]; then echo "⚠️ Mihomo"; echo "---"; echo "未找到 mihomo-ctl | color=red"; exit 0; fi',
+    'exec "$CTL" tray',
+    '',
+  ].join('\n');
+}
+
+// 安装菜单栏插件（仅 macOS）：内联生成插件 → 写入 xbar/SwiftBar 插件目录；
+// 若两者都没装，则自动通过 Homebrew 安装 SwiftBar 并完成配置。
 function cmdTrayInstall() {
   if (P.name !== 'macos') {
     console.log(c.yellow('  菜单栏插件仅支持 macOS（依赖 xbar / SwiftBar）'));
     return;
   }
-  const scriptDir = path.dirname(fs.realpathSync(process.argv[1]));
-  const candidates = [
-    path.join(scriptDir, '..', 'scripts', 'platform', 'macos', 'mihomo.5s.sh'),
-    path.join(scriptDir, 'platform', 'macos', 'mihomo.5s.sh'),
-    path.join(scriptDir, 'mihomo.5s.sh'),
-  ];
-  const srcPlugin = candidates.find(p => fs.existsSync(p));
-  if (!srcPlugin) {
-    console.log(c.red('✗ 找不到插件源文件 mihomo.5s.sh'));
-    console.log(c.dim('  请从仓库目录运行，或先 git clone net-tools'));
-    return;
-  }
   const HOME = process.env.HOME || '';
-  const dirs = [
-    { name: 'xbar',     dir: path.join(HOME, 'Library/Application Support/xbar/plugins') },
-    { name: 'SwiftBar', dir: path.join(HOME, 'Library/Application Support/SwiftBar/Plugins') },
-  ];
+  let SELF;
+  try { SELF = fs.realpathSync(process.argv[1]); } catch { SELF = process.argv[1]; }
+  const pluginText = trayPluginScript(SELF);
+
   console.log(c.bold('\n── 安装菜单栏插件 ────────────────────────────'));
-  let installed = 0;
-  for (const { name, dir } of dirs) {
-    if (!fs.existsSync(dir)) continue;  // 仅安装到已存在的插件目录
+
+  // 规范副本：始终在 ~/.config/mihomo/ 留一份，方便手动安装/排查
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  const canonical = path.join(CONFIG_DIR, 'mihomo.5s.sh');
+  fs.writeFileSync(canonical, pluginText);
+  fs.chmodSync(canonical, 0o755);
+
+  const xbarAppDir  = path.join(HOME, 'Library/Application Support/xbar');
+  const swiftAppDir = path.join(HOME, 'Library/Application Support/SwiftBar');
+  const xbarPlugins  = path.join(xbarAppDir, 'plugins');
+  const swiftPlugins = path.join(swiftAppDir, 'Plugins');
+
+  const writePlugin = (dir) => {
+    fs.mkdirSync(dir, { recursive: true });
     const dst = path.join(dir, 'mihomo.5s.sh');
-    fs.copyFileSync(srcPlugin, dst);
+    fs.writeFileSync(dst, pluginText);
     fs.chmodSync(dst, 0o755);
-    console.log(c.green(`  ✓ 已安装到 ${name}: ${dst}`));
+    return dst;
+  };
+
+  let installed = 0;
+  if (fs.existsSync(xbarAppDir)) {
+    console.log(c.green(`  ✓ xbar: ${writePlugin(xbarPlugins)}`));
+    run('open -g "xbar://app.xbarapp.com/refreshAllPlugins" 2>/dev/null');
     installed++;
   }
-  if (installed === 0) {
-    console.log(c.yellow('  未检测到 xbar / SwiftBar 插件目录'));
-    console.log(c.dim('  请先安装其一：'));
-    console.log(c.dim('    xbar:     https://xbarapp.com'));
-    console.log(c.dim('    SwiftBar: https://github.com/swiftbar/SwiftBar'));
-    console.log(c.dim(`\n  或手动复制: ${srcPlugin}`));
-    console.log(c.dim('  到对应插件目录并 chmod +x'));
-  } else {
-    console.log(c.dim('\n  在 xbar / SwiftBar 中点击 Refresh 即可看到菜单栏图标'));
+  if (fs.existsSync(swiftAppDir)) {
+    console.log(c.green(`  ✓ SwiftBar: ${writePlugin(swiftPlugins)}`));
+    run(`defaults write com.ameba.SwiftBar PluginDirectory "${swiftPlugins}" 2>/dev/null`);
+    run('open -g "swiftbar://refreshallplugins" 2>/dev/null');
+    installed++;
   }
+
+  if (installed > 0) {
+    console.log(c.dim('\n  插件已写入，菜单栏稍候即会出现 Mihomo 图标'));
+    return;
+  }
+
+  // 未检测到任何宿主 App —— 自动安装 SwiftBar
+  console.log(c.yellow('  未检测到 xbar / SwiftBar'));
+  const hasBrew = !!run('command -v brew 2>/dev/null');
+  if (!hasBrew) {
+    console.log(c.dim('  未检测到 Homebrew，无法自动安装。二选一：'));
+    console.log(c.dim('    1) 安装 Homebrew 后重试: mihomo-ctl tray install'));
+    console.log(c.dim('    2) 手动安装 SwiftBar(https://swiftbar.app) 或 xbar(https://xbarapp.com)'));
+    console.log(c.dim(`\n  插件脚本已就绪: ${canonical}`));
+    console.log(c.dim('  手动复制到对应 App 的插件目录即可'));
+    return;
+  }
+
+  console.log(c.dim('  正在通过 Homebrew 安装 SwiftBar...\n'));
+  try {
+    execSync('brew install --cask swiftbar', { stdio: 'inherit' });
+  } catch {
+    console.log(c.red('\n  ✗ SwiftBar 安装失败，请手动执行: brew install --cask swiftbar'));
+    console.log(c.dim(`  插件已就绪: ${canonical}`));
+    return;
+  }
+  const dst = writePlugin(swiftPlugins);
+  // 预设插件目录，让 SwiftBar 首启时跳过选择向导
+  run(`defaults write com.ameba.SwiftBar PluginDirectory "${swiftPlugins}" 2>/dev/null`);
+  console.log(c.green(`\n  ✓ SwiftBar 已安装，插件: ${dst}`));
+  run('open -a SwiftBar 2>/dev/null');
+  console.log(c.dim('  SwiftBar 已启动。若弹窗要求选择插件目录，请选择：'));
+  console.log(c.dim(`    ${swiftPlugins}`));
 }
 
 // ─── 入口 ──────────────────────────────────────────────────────

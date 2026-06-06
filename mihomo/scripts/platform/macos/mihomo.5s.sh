@@ -17,6 +17,9 @@
 #
 # 全部展示与菜单动作逻辑都在 `mihomo-ctl tray` 中，本脚本仅做转发。
 
+# 菜单栏 App 的 PATH 很精简，显式补上 node 常见位置，否则会找不到 node
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:$PATH"
+
 # 定位 mihomo-ctl（优先 PATH，其次常见安装路径）
 CTL="$(command -v mihomo-ctl 2>/dev/null)"
 [ -z "$CTL" ] && [ -x /usr/local/bin/mihomo-ctl ] && CTL=/usr/local/bin/mihomo-ctl

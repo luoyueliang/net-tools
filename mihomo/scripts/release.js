@@ -83,37 +83,16 @@ if (!htmlExists) warn('ui/index.html 不存在，ui install 命令将不可用')
 
 const htmlB64 = htmlExists ? fs.readFileSync(htmlFile).toString('base64') : '';
 
-// 在 require('fs') 之后注入 _BUNDLED_UI_ 常量
-src = src.replace(
-  /(const fs\s*=\s*require\('fs'\);)/,
-  `$1\nconst _BUNDLED_UI_ = '${htmlB64}';`
-);
-
-// 把文件系统读取替换为内联常量（cmdUi install 路径）
-const OLD_UI = [
-  "    if (!fs.existsSync(srcUi)) {",
-  "      console.log(c.red(`\u2717 \u627e\u4e0d\u5230 UI \u6e90\u6587\u4ef6: ${srcUi}`));",
-  "      console.log(c.dim('  \u8bf7\u4ece\u4ed3\u5e93\u76ee\u5f55\u8fd0\u884c\uff0c\u6216\u5148 git clone net-tools'));",
-  "      return;",
-  "    }",
-  "    fs.mkdirSync(dstUi, { recursive: true });",
-  "    fs.copyFileSync(srcUi, path.join(dstUi, 'index.html'));",
-].join('\n');
-
-const NEW_UI = [
-  "    if (!_BUNDLED_UI_) {",
-  "      console.log(c.red('\u2717 UI \u672a\u5185\u8054\uff0c\u8bf7\u4ece\u6e90\u7801\u76ee\u5f55\u8fd0\u884c'));",
-  "      return;",
-  "    }",
-  "    fs.mkdirSync(dstUi, { recursive: true });",
-  "    fs.writeFileSync(path.join(dstUi, 'index.html'), Buffer.from(_BUNDLED_UI_, 'base64').toString('utf8'));",
-].join('\n');
-
-if (src.includes(OLD_UI)) {
-  src = src.replace(OLD_UI, NEW_UI);
-  ok(`HTML \u5185\u8054\u5b8c\u6210 (${(htmlB64.length * 0.75 / 1024).toFixed(0)} KB)`);
+// 在 require('fs') 之后注入 _BUNDLED_UI_ 常量；
+// 运行时由 getBuiltinUiHtml() 通过 typeof 探测使用，无需脆弱的代码块替换。
+if (/const fs\s*=\s*require\('fs'\);/.test(src)) {
+  src = src.replace(
+    /(const fs\s*=\s*require\('fs'\);)/,
+    `$1\nconst _BUNDLED_UI_ = '${htmlB64}';`
+  );
+  ok(`HTML 内联完成 (${(htmlB64.length * 0.75 / 1024).toFixed(0)} KB)`);
 } else {
-  warn('\u672a\u627e\u5230 UI copyFileSync \u5757\uff0c\u8df3\u8fc7\u5185\u8054\u66ff\u6362');
+  warn('未找到 require(fs) 注入点，跳过 UI 内联');
 }
 
 // ── Step 3: 混淆 ──────────────────────────────────────────────────────────────
