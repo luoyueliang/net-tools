@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.5.9';
+const VERSION     = '1.6.0';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -2760,9 +2760,10 @@ async function cmdTray(sub) {
   console.log(sep);
 
   // ── 进程控制 ──
-  console.log(act('⏹ 停止', 'stop'));
+  // 使用不带变体选择符歧义的纯 emoji，避免在菜单栏中渲染为小号文本符号
+  console.log(act('🛑 停止', 'stop'));
   console.log(act('🔁 重启', 'restart'));
-  console.log(act('♻︎ 重载配置', 'reload'));
+  console.log(act('🔃 重载配置', 'reload'));
   console.log(sep);
 
   // ── 代理 / TUN / DNS 开关 ──
@@ -2810,6 +2811,45 @@ async function cmdTray(sub) {
   // ── 工具 ──
   console.log(act('🖥 打开面板', 'ui', 'open'));
   console.log(act('🌍 更新 Geo 数据', 'geo', 'update'));
+  console.log(sep);
+
+  // ── 关于（非交互信息行，无 bash= 属性则显示为灰色只读文字）──
+  const home = process.env.HOME || '';
+  const shorten = p => p.startsWith(home) ? p.replace(home, '~') : p;
+  // 检测当前 UI 面板类型
+  const uiIdx = path.join(UI_DIR, 'index.html');
+  let uiLabel = '未安装';
+  if (fs.existsSync(uiIdx)) {
+    try {
+      const titleM = fs.readFileSync(uiIdx, 'utf8').match(/<title>([^<]*)<\/title>/i);
+      const title = titleM ? titleM[1].trim() : '';
+      uiLabel = /metacube/i.test(title) ? 'MetaCubeXD' : /mihomo/i.test(title) ? '内置面板' : title || '已安装';
+    } catch { uiLabel = '已安装'; }
+  }
+  // Geo 文件时效
+  const geoLabel = (() => {
+    try {
+      const files = getGeoFiles()
+        .map(g => path.join(CONFIG_DIR, g.name))
+        .filter(f => fs.existsSync(f));
+      if (!files.length) return '未下载';
+      const oldest = Math.min(...files.map(f => fs.statSync(f).mtimeMs));
+      const days = Math.floor((Date.now() - oldest) / 86400000);
+      return days === 0 ? '今天' : `${days} 天前`;
+    } catch { return '未知'; }
+  })();
+  console.log('ℹ️ 关于');
+  console.log(`-- mihomo-ctl  v${VERSION}`);
+  console.log(`-- Mihomo 内核  ${ver.version || '未知'}`);
+  console.log(`-- -----`);
+  console.log(`-- 配置文件  ${shorten(CONFIG)}`);
+  console.log(`-- 配置目录  ${shorten(CONFIG_DIR)}`);
+  console.log(`-- API      ${API}`);
+  console.log(`-- 日志      ${shorten(LOG)}`);
+  console.log(`-- -----`);
+  console.log(`-- Web 面板  ${uiLabel}`);
+  console.log(`-- Geo 数据  更新于 ${geoLabel}`);
+  console.log(sep);
   console.log(act('🔄 刷新', 'tray'));
 }
 
