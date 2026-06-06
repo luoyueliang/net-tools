@@ -11,7 +11,7 @@ const fs   = require('fs');
 const IS_WIN = process.platform === 'win32';
 
 // ─── 路径常量（跨平台）────────────────────────────────────────
-const VERSION     = '1.5.3';
+const VERSION     = '1.5.4';
 const GITHUB_REPO = 'luoyueliang/net-tools';
 const API         = 'http://127.0.0.1:9090';
 
@@ -1964,9 +1964,149 @@ function cmdCheck() {
   }
 }
 
+// ─── Clash/Mihomo 家族进程互斥 ────────────────────────────────
+// 背景：ClashX Meta / Clash Verge / Mihomo Party 等 GUI 都内置自己的 mihomo
+// 内核，会抢占 7890/9090/53 端口。更隐蔽的是：第三方 mihomo 占用 9090 后，
+// isRunning() 仅凭 API 返回的 version 字段会误判为"本工具已在运行"，从而引发
+// 各种诡异问题。启动前先做互斥，结束这些冲突进程，确保端口干净。
+const CONFLICT_KEYWORDS = [
+  'clashx',            // ClashX / ClashX Pro / ClashX Meta
+  'clash verge', 'clash-verge', 'verge-mihomo', 'clash-nyanpasu', 'nyanpasu',
+  'clash-meta', 'clash.meta', 'clashmeta',
+  'clash for windows',
+  'mihomo party', 'mihomo-party',
+  'flclash', 'stash.app', 'clashn',
+];
+
+// 本工具自己的 mihomo 内核：/usr/local/bin/mihomo -d ~/.config/mihomo
+function isOwnMihomoCore(cmd) {
+  return cmd.includes(BIN) && cmd.includes(CONFIG_DIR);
+}
+
+// 结束指定 PID（先普通信号，hard=true 时强杀）
+function killConflictPid(pid, hard) {
+  if (IS_WIN) { run(`taskkill /PID ${pid} ${hard ? '/F' : ''} /T 2>NUL`); return; }
+  const sig = hard ? '-9' : '';
+  run(`sudo kill ${sig} ${pid} 2>/dev/null || kill ${sig} ${pid} 2>/dev/null || true`);
+}
+
+// Windows: 用 tasklist 检测已知 GUI/内核（无法区分自带 mihomo.exe，故只盯 GUI）
+function detectConflictsWin() {
+  const out = run('tasklist /FO CSV /NH 2>NUL');
+  if (!out) return [];
+  const names = ['clashx', 'clash-verge', 'verge', 'nyanpasu', 'flclash', 'stash', 'clash.exe', 'clashn'];
+  const results = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/^"([^"]+)","(\d+)"/);
+    if (!m) continue;
+    const name = m[1], pid = m[2];
+    if (pid === String(process.pid)) continue;
+    if (names.some(k => name.toLowerCase().includes(k))) results.push({ pid, cmd: name });
+  }
+  return results;
+}
+
+// 返回与本工具冲突的 Clash/Mihomo 家族进程 [{pid, cmd}]
+function detectConflicts() {
+  if (IS_WIN) return detectConflictsWin();
+  const out = run('ps -axww -o pid=,command= 2>/dev/null');
+  if (!out) return [];
+  const selfPid = String(process.pid);
+  const ppid    = String(process.ppid || '');
+  const results = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const pid = m[1];
+    const cmd = m[2].trim();
+    if (pid === selfPid || pid === ppid) continue;
+    if (cmd.includes('mihomo-ctl')) continue;   // 本工具脚本自身
+    if (cmd.includes('ps -axww'))   continue;   // 本次 ps 调用自身
+    if (isOwnMihomoCore(cmd))       continue;   // 本工具的 mihomo 内核
+    const low = cmd.toLowerCase();
+    let hit = CONFLICT_KEYWORDS.some(k => low.includes(k));
+    // 第三方 mihomo / clash 内核（非本工具内核，上面已排除）
+    if (!hit && /(^|\/|\s)(mihomo|clash)(\s|$|-d)/.test(low)) hit = true;
+    if (hit) results.push({ pid, cmd: cmd.length > 110 ? cmd.slice(0, 107) + '...' : cmd });
+  }
+  return results;
+}
+
+// 简单的 [Y/n] 确认提示
+function confirmYesNo(question) {
+  return new Promise(resolve => {
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(c.yellow(question), ans => {
+      rl.close();
+      const a = (ans || '').trim().toLowerCase();
+      resolve(a === '' || a === 'y' || a === 'yes');
+    });
+  });
+}
+
+// 启动前互斥：检测并结束冲突进程。返回 true 表示可以继续启动
+async function guardAgainstConflicts({ force = false } = {}) {
+  const conflicts = detectConflicts();
+  if (conflicts.length === 0) return true;
+
+  console.log(c.yellow(`\n⚠ 检测到 ${conflicts.length} 个可能冲突的 Clash/Mihomo 进程：`));
+  conflicts.forEach(p => console.log(`  ${c.red('PID ' + p.pid)}  ${c.dim(p.cmd)}`));
+  console.log(c.dim('  它们可能抢占 7890 / 9090 / 53 端口，导致 Mihomo 启动异常或行为诡异。'));
+
+  const interactive = process.stdin.isTTY && process.stdout.isTTY;
+  let doKill = force;
+  if (!doKill) {
+    if (interactive) {
+      doKill = await confirmYesNo('  是否结束这些进程以释放端口？ [Y/n] ');
+    } else {
+      doKill = true; // 非交互（如开机自启）默认结束冲突进程，保证启动可靠
+      console.log(c.dim('  非交互模式：自动结束冲突进程'));
+    }
+  }
+  if (!doKill) {
+    console.log(c.yellow('  已取消。请手动退出上述程序后重试，或: mihomo-ctl start --force'));
+    return false;
+  }
+
+  conflicts.forEach(p => killConflictPid(p.pid, false));
+  await new Promise(r => setTimeout(r, 800));
+  let still = detectConflicts();
+  if (still.length) {
+    still.forEach(p => killConflictPid(p.pid, true)); // 残留进程强杀
+    await new Promise(r => setTimeout(r, 400));
+    still = detectConflicts();
+  }
+  if (still.length) {
+    console.log(c.yellow(`  ⚠ 仍有 ${still.length} 个进程未结束，可能需手动退出 GUI 应用：`));
+    still.forEach(p => console.log(c.dim(`    PID ${p.pid}  ${p.cmd}`)));
+    return false;
+  }
+  console.log(c.green('  ✓ 冲突进程已结束，端口已释放'));
+  return true;
+}
+
+// ─── 命令：conflicts（查看/结束冲突进程）──────────────────────
+async function cmdConflicts(args = []) {
+  const force = args.some(a => ['--force', '-f', '--kill', '-y', '--yes'].includes(a));
+  console.log(c.bold('\n── Clash/Mihomo 进程互斥检查 ─────────────────'));
+  const list = detectConflicts();
+  if (!list.length) { console.log(c.green('✓ 未检测到冲突进程')); return; }
+  if (force) { await guardAgainstConflicts({ force: true }); return; }
+  console.log(c.yellow(`检测到 ${list.length} 个可能冲突的进程：`));
+  list.forEach(p => console.log(`  ${c.red('PID ' + p.pid)}  ${c.dim(p.cmd)}`));
+  console.log(c.dim('\n  结束这些进程: mihomo-ctl conflicts --force'));
+  console.log(c.dim('  或启动时自动处理: mihomo-ctl start'));
+}
+
 // ─── 命令：start / stop / restart ─────────────────────────────
-async function cmdStart() {
-  // 如果已运行则确保代理和 DNS 状态正确
+async function cmdStart(args = []) {
+  const force = args.some(a => ['--force', '-f', '--yes', '-y'].includes(a));
+  // 互斥：先结束抢占端口的 Clash/Mihomo 家族进程（ClashX/Verge 等），
+  // 否则第三方内核占用 9090 会让 isRunning() 误判为"已运行"。
+  if (!(await guardAgainstConflicts({ force }))) return;
+
+  // 如果（本工具的）Mihomo 已运行则确保代理和 DNS 状态正确
   if (await isRunning()) {
     console.log(c.yellow('⚠ Mihomo 已在运行，自动确认系统代理状态...'));
     await cmdProxyOn();
@@ -2111,6 +2251,9 @@ async function cmdRestart() {
   }
   await shutdownProcess('停止旧进程...');
   console.log(c.dim('done'));
+
+  // 互斥：停掉本工具旧进程后，再清理可能抢占端口的第三方 Clash/Mihomo 进程
+  await guardAgainstConflicts({ force: true });
 
   process.stdout.write('启动新进程... ');
   P.startProcess();
@@ -2298,9 +2441,13 @@ ${c.cyan('状态 & 控制')}
   mihomo-ctl                  查看状态（含 GeoIP 新鲜度、连接数）
   mihomo-ctl version          显示 mihomo-ctl 版本
   mihomo-ctl start            启动进程 + 自动开启系统代理
+                              （启动前自动互斥：检测并结束 ClashX/Verge 等抢占端口的进程）
+  mihomo-ctl start --force    启动并强制结束冲突进程（不询问）
   mihomo-ctl stop             停止进程 + 自动关闭系统代理
   mihomo-ctl restart          重启进程 + 自动恢复系统代理
   mihomo-ctl reload           热重载配置文件（不中断连接）
+  mihomo-ctl conflicts        检测冲突的 Clash/Mihomo 家族进程
+  mihomo-ctl conflicts --force  结束所有冲突进程
   mihomo-ctl upgrade          升级 mihomo-ctl 自身（从 GitHub Release）
   mihomo-ctl upgrade mihomo   升级 Mihomo 内核（预下载后再停机，自动备份+回滚）
   mihomo-ctl self-upgrade     = upgrade（向后兼容别名）
@@ -2391,10 +2538,12 @@ const [,, cmd, ...args] = process.argv;
     case 'proxies': await cmdProxies(); break;
     case 'test':    await cmdTest();    break;
     case 'select':  await cmdSelect(args[0], args[1]); break;
-    case 'start':      await cmdStart();     break;
+    case 'start':      await cmdStart(args);   break;
     case 'stop':       await cmdStop();      break;
     case 'restart':    await cmdRestart();   break;
     case 'reload':     await cmdReload();    break;
+    case 'conflicts':
+    case 'conflict':   await cmdConflicts(args); break;
     case 'upgrade':
       if (args[0] === 'mihomo') await cmdUpgradeMihomo();
       else await cmdUpgrade();

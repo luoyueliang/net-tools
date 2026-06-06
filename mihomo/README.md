@@ -204,9 +204,13 @@ mihomo-ctl dns-on    # 自动请求管理员权限（UAC 弹窗）
 ```
 mihomo-ctl                    查看状态（含 GeoIP 新鲜度、连接数）
 mihomo-ctl start              启动进程 + 自动开启系统代理
+                              （启动前自动互斥：检测并结束 ClashX/Verge 等抢占端口的进程）
+mihomo-ctl start --force      启动并强制结束冲突进程（不询问）
 mihomo-ctl stop               停止进程 + 自动关闭系统代理
 mihomo-ctl restart            重启进程 + 自动恢复系统代理
 mihomo-ctl reload             热重载配置文件（不中断连接）
+mihomo-ctl conflicts          检测冲突的 Clash/Mihomo 家族进程（ClashX/Verge/Stash 等）
+mihomo-ctl conflicts --force  结束所有冲突进程
 mihomo-ctl upgrade            无缝升级（预下载完成后才停机，自动备份+失败回滚）
 mihomo-ctl check              检查配置文件语法
 ```
