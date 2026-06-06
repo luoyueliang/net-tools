@@ -31,7 +31,8 @@ mihomo/
 │   ├── install.js                    # 安装脚本（自动检测平台）
 │   └── platform/
 │       ├── macos/
-│       │   └── mihomo.plist          # macOS LaunchAgent 模板
+│       │   ├── mihomo.plist          # macOS LaunchAgent 模板
+│       │   └── mihomo.5s.sh          # xbar / SwiftBar 菜单栏插件
 │       ├── linux/
 │       │   └── mihomo.service        # systemd 服务文件
 │       ├── alpine/
@@ -248,6 +249,19 @@ mihomo-ctl ui                 查看 Web UI 安装状态
 mihomo-ctl ui install         安装到 ~/.config/mihomo/ui/（自动写入 external-ui）
 mihomo-ctl ui open            浏览器打开 http://127.0.0.1:9090/ui/
 ```
+
+> `ui install` 会清理 mihomo 内核自动下载的默认面板（MetaCubeXD）残留，并设置
+> `external-ui-url: ''` 阻止内核启动时再次下载覆盖，确保始终使用本项目自带面板。
+
+**菜单栏图标（macOS，需 [xbar](https://xbarapp.com) 或 [SwiftBar](https://github.com/swiftbar/SwiftBar)）**
+
+```
+mihomo-ctl tray               输出菜单栏插件内容（由 xbar/SwiftBar 调用渲染）
+mihomo-ctl tray install       安装插件到 xbar / SwiftBar 插件目录
+```
+
+> 菜单栏显示运行状态与当前节点，下拉菜单可一键 启动/停止/重启/切换系统代理或 TUN/打开面板。
+> 全部逻辑在 `mihomo-ctl tray` 中，插件脚本仅做转发，零原生编译、零 npm 依赖。
 
 **配置备份 & 恢复**
 
